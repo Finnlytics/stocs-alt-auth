@@ -1,0 +1,758 @@
+openapi: 3.1.0
+info:
+  title: Stocs Auth API
+  version: 1.0.0
+  description: |
+    Headless authentication service — the single source of truth for user identity across
+    STOCS platforms (B2B wholesale, Bids auctions).
+
+    ## Token abilities
+    Sanctum tokens are scoped by ability:
+    - `platform:b2b` — issued on B2B login and registration
+    - `platform:bids` — issued on Bids OTP verification
+    - Admin tokens carry both abilities
+
+    Consumer backends should inspect the `abilities` array returned from
+    `POST /v1/service/validate-token` to decide whether a token is valid for their platform.
+
+    ## Auth flavours
+    - **B2B**: email + password. Registration creates a user in `pending` B2B state that
+      an admin must approve before the user can log in.
+    - **Bids**: OTP only — no passwords. First OTP verification creates the user.
+    - **Admin**: email + password, issued via `/v1/admin/users`.
+
+    ## Token TTL
+    Personal access tokens expire 24 hours after issue by default
+    (`SANCTUM_TOKEN_EXPIRATION_MINUTES`). Consumers must handle 401 on expired tokens
+    and re-authenticate.
+
+servers:
+  - url: http://localhost:8098/api
+    description: Local development
+  - url: https://auth.stocs.example.com/api
+    description: Production (replace with real host)
+
+tags:
+  - name: Auth (Public)
+    description: Unauthenticated endpoints for registration, login, OTP, and password reset
+  - name: Auth (User)
+    description: Endpoints requiring a valid Sanctum bearer token
+  - name: Admin
+    description: Admin-only user management endpoints
+  - name: Service
+    description: Service-to-service endpoints (backend-only, `X-Service-Key` required)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [Auth (Public)]
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /v1/auth/register/b2b:
+    post:
+      tags: [Auth (Public)]
+      summary: Register a new B2B user
+      description: |
+        Creates a new user with `pending` B2B access and auto-approved Bids access.
+        An admin must approve the B2B access before the user can log in via B2B.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, password_confirmation]
+              properties:
+                name: { type: string, maxLength: 255 }
+                email: { type: string, format: email }
+                password:
+                  type: string
+                  minLength: 10
+                  description: Must contain mixed case, numbers, and pass the haveibeenpwned check
+                password_confirmation: { type: string }
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSuccessResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /v1/auth/login/b2b:
+    post:
+      tags: [Auth (Public)]
+      summary: Log in a B2B user
+      description: |
+        Returns a token scoped with `platform:b2b`.
+        Blocked with 403 if the user's B2B access is pending, rejected, or suspended.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSuccessResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '403':
+          description: Account is pending, rejected, or suspended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  status:
+                    type: string
+                    enum: [pending, rejected, suspended]
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /v1/auth/otp/request:
+    post:
+      tags: [Auth (Public)]
+      summary: Request an OTP for Bids auth
+      description: |
+        Always returns 202 regardless of whether the identifier matches an existing user,
+        to avoid disclosing user existence.
+        Rate limited to 5/hour and 3/min per identifier.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string, description: Email (or phone in the future) }
+                type:
+                  type: string
+                  enum: [email, phone]
+                  default: email
+      responses:
+        '202':
+          description: OTP accepted for delivery
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: OTP sent. }
+                  expires_in: { type: integer, example: 600, description: Seconds until OTP expires }
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /v1/auth/otp/verify:
+    post:
+      tags: [Auth (Public)]
+      summary: Verify an OTP and receive a Bids token
+      description: |
+        Creates the user on first successful verification if they don't exist.
+        Issued token carries `platform:bids` ability.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, code]
+              properties:
+                identifier: { type: string }
+                code: { type: string, minLength: 6, maxLength: 6 }
+                type:
+                  type: string
+                  enum: [email, phone]
+                  default: email
+      responses:
+        '200':
+          description: OTP verified
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AuthSuccessResponse'
+                  - type: object
+                    properties:
+                      is_new_user: { type: boolean }
+        '422':
+          description: Invalid, expired, or exhausted OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/auth/password/forgot:
+    post:
+      tags: [Auth (Public)]
+      summary: Request a password reset link
+      description: |
+        Always returns 200 — does not disclose whether the email is registered.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Reset link queued for delivery if the email exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/auth/password/reset:
+    post:
+      tags: [Auth (Public)]
+      summary: Reset password with a token from the reset email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, token, password, password_confirmation]
+              properties:
+                email: { type: string, format: email }
+                token: { type: string }
+                password: { type: string, minLength: 10 }
+                password_confirmation: { type: string }
+      responses:
+        '200':
+          description: Password updated — all existing tokens revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '422':
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/auth/me:
+    get:
+      tags: [Auth (User)]
+      summary: Get the authenticated user
+      responses:
+        '200':
+          description: Current user with platform access list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Auth (User)]
+      summary: Update the authenticated user's profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+                email: { type: string, format: email }
+                phone: { type: string, maxLength: 20, nullable: true }
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+                  message: { type: string }
+    delete:
+      tags: [Auth (User)]
+      summary: GDPR-delete the authenticated user
+      description: Anonymises PII, revokes all tokens, and soft-deletes the record.
+      responses:
+        '200':
+          description: Account deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/auth/me/password:
+    put:
+      tags: [Auth (User)]
+      summary: Change password
+      description: Revokes all other tokens. Current token remains valid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, password, password_confirmation]
+              properties:
+                current_password: { type: string }
+                password: { type: string, minLength: 10 }
+                password_confirmation: { type: string }
+      responses:
+        '200':
+          description: Password updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/auth/me/marketing:
+    put:
+      tags: [Auth (User)]
+      summary: Update marketing preferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preferences]
+              properties:
+                preferences:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: Preferences updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/auth/logout:
+    post:
+      tags: [Auth (User)]
+      summary: Revoke the current token
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/auth/logout/all:
+    post:
+      tags: [Auth (User)]
+      summary: Revoke every token for the current user
+      responses:
+        '200':
+          description: All sessions revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+
+  /v1/admin/users:
+    get:
+      tags: [Admin]
+      summary: List users
+      parameters:
+        - { in: query, name: platform, schema: { type: string, enum: [b2b, bids] } }
+        - { in: query, name: status, schema: { type: string, enum: [pending, approved, rejected, suspended] } }
+        - { in: query, name: role, schema: { type: string, enum: [admin, wholesaler, consumer] } }
+        - { in: query, name: search, schema: { type: string } }
+        - { in: query, name: per_page, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  meta:
+                    type: object
+                    properties:
+                      current_page: { type: integer }
+                      last_page: { type: integer }
+                      total: { type: integer }
+    post:
+      tags: [Admin]
+      summary: Create an admin user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, password_confirmation]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 12 }
+                password_confirmation: { type: string }
+                is_super_admin: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Admin created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+                  message: { type: string }
+
+  /v1/admin/users/{uuid}:
+    parameters:
+      - { in: path, name: uuid, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Admin]
+      summary: Get a user by UUID
+      responses:
+        '200':
+          description: User
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Admin]
+      summary: Update a user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+                  message: { type: string }
+
+  /v1/admin/users/{uuid}/approve:
+    post:
+      tags: [Admin]
+      parameters:
+        - { in: path, name: uuid, required: true, schema: { type: string, format: uuid } }
+      summary: Approve platform access for a user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                platform: { type: string, enum: [b2b, bids], default: b2b }
+      responses:
+        '200':
+          description: User approved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+                  message: { type: string }
+
+  /v1/admin/users/{uuid}/reject:
+    post:
+      tags: [Admin]
+      parameters:
+        - { in: path, name: uuid, required: true, schema: { type: string, format: uuid } }
+      summary: Reject platform access for a user
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                platform: { type: string, enum: [b2b, bids], default: b2b }
+                reason: { type: string, maxLength: 1000 }
+      responses:
+        '200':
+          description: User rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+                  message: { type: string }
+
+  /v1/admin/users/{uuid}/suspend:
+    post:
+      tags: [Admin]
+      parameters:
+        - { in: path, name: uuid, required: true, schema: { type: string, format: uuid } }
+      summary: Suspend a user on a platform
+      description: Also revokes all active tokens for the user.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                platform: { type: string, enum: [b2b, bids], default: b2b }
+      responses:
+        '200':
+          description: User suspended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+                  message: { type: string }
+
+  /v1/admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: List auth audit logs
+      parameters:
+        - { in: query, name: user_id, schema: { type: integer } }
+        - { in: query, name: action, schema: { type: string } }
+        - { in: query, name: platform, schema: { type: string, enum: [b2b, bids] } }
+        - { in: query, name: per_page, schema: { type: integer, default: 50 } }
+      responses:
+        '200':
+          description: Paginated audit log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditLog' }
+                  meta:
+                    type: object
+                    properties:
+                      current_page: { type: integer }
+                      last_page: { type: integer }
+                      total: { type: integer }
+
+  /v1/service/validate-token:
+    post:
+      tags: [Service]
+      summary: Validate a user Sanctum token
+      description: |
+        Called by consumer backends (B2B, Bids) to verify a user token received from the client.
+        Returns the user and the token's abilities so the consumer can scope by platform.
+      security:
+        - serviceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, description: The plaintext Sanctum token from the client }
+      responses:
+        '200':
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/User' }
+                  abilities:
+                    type: array
+                    items: { type: string, example: platform:b2b }
+        '401':
+          description: Token invalid/expired, or service key missing/invalid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean, example: false }
+                  message: { type: string }
+
+  /v1/service/users/{uuid}:
+    get:
+      tags: [Service]
+      summary: Look up a user by UUID
+      security:
+        - serviceKey: []
+      parameters:
+        - { in: path, name: uuid, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: User
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/service/users/by-email/{email}:
+    get:
+      tags: [Service]
+      summary: Look up a user by email
+      security:
+        - serviceKey: []
+      parameters:
+        - { in: path, name: email, required: true, schema: { type: string, format: email } }
+      responses:
+        '200':
+          description: User
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum Personal Access Token
+    serviceKey:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+      description: |
+        Format: `{prefix}.{secret}`. Issue new keys with
+        `php artisan auth:issue-service-key <name> <platform>`.
+
+  schemas:
+    User:
+      type: object
+      properties:
+        uuid: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        email_verified_at: { type: string, format: date-time, nullable: true }
+        is_super_admin: { type: boolean }
+        marketing_preferences:
+          type: object
+          additionalProperties: true
+          nullable: true
+        platforms:
+          type: array
+          items:
+            type: object
+            properties:
+              platform: { type: string, enum: [b2b, bids] }
+              role: { type: string, enum: [admin, wholesaler, consumer] }
+              status: { type: string, enum: [pending, approved, rejected, suspended] }
+              approved_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    AuthSuccessResponse:
+      type: object
+      properties:
+        data: { $ref: '#/components/schemas/User' }
+        token:
+          type: string
+          description: Sanctum personal access token to send as `Authorization: Bearer <token>`
+        message: { type: string }
+
+    MessageResponse:
+      type: object
+      properties:
+        message: { type: string }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer, nullable: true }
+        action: { type: string, example: login }
+        description: { type: string }
+        platform: { type: string, enum: [b2b, bids], nullable: true }
+        ip_address: { type: string, nullable: true }
+        user_agent: { type: string, nullable: true }
+        metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/MessageResponse' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/MessageResponse' }
+    ValidationError:
+      description: Input validation failed
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message: { type: string }
+              errors:
+                type: object
+                additionalProperties:
+                  type: array
+                  items: { type: string }
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/MessageResponse' }
