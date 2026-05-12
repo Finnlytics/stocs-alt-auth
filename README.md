@@ -2,8 +2,6 @@
 
 Headless API authentication service. Single source of truth for user identity across stocs-b2b and stocs-bids. No admin UI — other services' admin panels call these endpoints.
 
-For architecture, platform model, and the B2B migration plan, see [`../CLAUDE.md`](../CLAUDE.md).
-
 ## Quick commands
 
 ```bash
