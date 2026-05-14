@@ -1,0 +1,435 @@
+{
+  "info": {
+    "name": "stocs-auth",
+    "_postman_id": "9b6f2c10-aa00-4b2c-9b1a-stocsauthcol1",
+    "description": "Headless auth API for STOCS (B2B + Bids). Mirrors src/docs/openapi.yaml. Test-only — not for distribution.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{userToken}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8098", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Public Auth",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/health", "host": ["{{baseUrl}}"], "path": ["api", "health"] }
+          }
+        },
+        {
+          "name": "Register B2B",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.token) pm.environment.set('userToken', json.token);",
+                  "  if (json.user && json.user.uuid) pm.environment.set('userUuid', json.user.uuid);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Test Wholesaler\",\n  \"email\": \"new-wholesaler@stocs.test\",\n  \"password\": \"TestPassword1234\",\n  \"password_confirmation\": \"TestPassword1234\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/register/b2b", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "register", "b2b"] },
+            "description": "Creates a new B2B user. Pending B2B access until admin approves; auto-approved for Bids. Captures the bearer token into userToken on success."
+          }
+        },
+        {
+          "name": "Login B2B",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.token) pm.environment.set('userToken', json.token);",
+                  "  if (json.user && json.user.uuid) pm.environment.set('userUuid', json.user.uuid);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"password\": \"{{testPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login/b2b", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login", "b2b"] },
+            "description": "200 → platform:b2b token. 401 invalid creds. 403 pending/rejected/suspended (with status field). 429 rate-limited."
+          }
+        },
+        {
+          "name": "Login Admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.token) pm.environment.set('adminToken', json.token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login/b2b", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login", "b2b"] },
+            "description": "Admins log in via the same B2B login endpoint. Token saved to adminToken for use against /v1/admin/*."
+          }
+        },
+        {
+          "name": "Request OTP",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"{{bidderEmail}}\",\n  \"type\": \"email\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/otp/request", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "otp", "request"] },
+            "description": "Always returns 202. In dev the OTP lands in src/storage/logs/laravel.log — paste the 6-digit code into otpCode. Rate limit: 5/hr, 3/min per identifier."
+          }
+        },
+        {
+          "name": "Verify OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const json = pm.response.json();",
+                  "  if (json.token) pm.environment.set('userToken', json.token);",
+                  "  if (json.user && json.user.uuid) pm.environment.set('userUuid', json.user.uuid);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"identifier\": \"{{bidderEmail}}\",\n  \"code\": \"{{otpCode}}\",\n  \"type\": \"email\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/otp/verify", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "otp", "verify"] },
+            "description": "Verifies the OTP and returns a platform:bids token. Creates the user on first verification."
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/password/forgot", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "password", "forgot"] },
+            "description": "Always 200 — does not disclose user existence. Reset token arrives via mail driver (storage/logs/laravel.log in dev)."
+          }
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{testEmail}}\",\n  \"token\": \"{{resetToken}}\",\n  \"password\": \"NewPassword1234\",\n  \"password_confirmation\": \"NewPassword1234\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/password/reset", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "password", "reset"] },
+            "description": "Resets password and revokes every existing token. 422 on invalid/expired token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Me",
+      "item": [
+        {
+          "name": "Get Me",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "me"] }
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Updated Name\",\n  \"phone\": \"+447700900123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "me"] }
+          }
+        },
+        {
+          "name": "Update Password",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"current_password\": \"{{testPassword}}\",\n  \"password\": \"NewSecret1234\",\n  \"password_confirmation\": \"NewSecret1234\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/me/password", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "me", "password"] },
+            "description": "Revokes all OTHER tokens; current token stays valid (intentional UX)."
+          }
+        },
+        {
+          "name": "Update Marketing",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"preferences\": {\n    \"email\": true,\n    \"sms\": false,\n    \"push\": true,\n    \"product_drops\": true,\n    \"weekly_digest\": false\n  }\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/me/marketing", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "me", "marketing"] },
+            "description": "Allowed keys: email, sms, push, product_drops, weekly_digest. Anything else returns 422."
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/logout", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "logout"] }
+          }
+        },
+        {
+          "name": "Logout All",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/logout/all", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "logout", "all"] }
+          }
+        },
+        {
+          "name": "Delete Account",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "me"] },
+            "description": "GDPR-deletes the authenticated user: anonymises PII, revokes tokens, soft-deletes."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "{{adminToken}}", "type": "string" }]
+      },
+      "item": [
+        {
+          "name": "List Users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users?platform=b2b&status=pending&per_page=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "users"],
+              "query": [
+                { "key": "platform", "value": "b2b" },
+                { "key": "status", "value": "pending" },
+                { "key": "per_page", "value": "20" },
+                { "key": "role", "value": "wholesaler", "disabled": true },
+                { "key": "search", "value": "stocs", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/users/{{userUuid}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "users", "{{userUuid}}"] }
+          }
+        },
+        {
+          "name": "Update User",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Renamed by Admin\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/users/{{userUuid}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "users", "{{userUuid}}"] }
+          }
+        },
+        {
+          "name": "Approve",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"b2b\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/users/{{userUuid}}/approve", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "users", "{{userUuid}}", "approve"] }
+          }
+        },
+        {
+          "name": "Reject",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"b2b\",\n  \"reason\": \"Insufficient trade credentials\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/users/{{userUuid}}/reject", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "users", "{{userUuid}}", "reject"] }
+          }
+        },
+        {
+          "name": "Suspend",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"platform\": \"b2b\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/users/{{userUuid}}/suspend", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "users", "{{userUuid}}", "suspend"] },
+            "description": "Suspends platform access AND revokes every active Sanctum token for the user."
+          }
+        },
+        {
+          "name": "Create Admin",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"New Admin\",\n  \"email\": \"newadmin@stocs.test\",\n  \"password\": \"AdminPassword1234\",\n  \"password_confirmation\": \"AdminPassword1234\",\n  \"is_super_admin\": false\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/admin/users", "host": ["{{baseUrl}}"], "path": ["api", "v1", "admin", "users"] },
+            "description": "is_super_admin only honoured when the caller is already a super-admin (server-side check)."
+          }
+        },
+        {
+          "name": "Audit Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/audit-logs?per_page=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "audit-logs"],
+              "query": [
+                { "key": "per_page", "value": "50" },
+                { "key": "user_id", "value": "1", "disabled": true },
+                { "key": "action", "value": "login", "disabled": true },
+                { "key": "platform", "value": "b2b", "disabled": true }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Service",
+      "auth": { "type": "noauth" },
+      "item": [
+        {
+          "name": "Validate Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Service-Key", "value": "{{serviceKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{userToken}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/service/validate-token", "host": ["{{baseUrl}}"], "path": ["api", "v1", "service", "validate-token"] },
+            "description": "Returns the user + the token's abilities so the consumer can scope by platform. Rate-limited to 600/min per service key."
+          }
+        },
+        {
+          "name": "Get User by UUID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Key", "value": "{{serviceKey}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/service/users/{{userUuid}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "service", "users", "{{userUuid}}"] }
+          }
+        },
+        {
+          "name": "Get User by Email",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Key", "value": "{{serviceKey}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/service/users/by-email/{{testEmail}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "service", "users", "by-email", "{{testEmail}}"] },
+            "description": "Note: email is in the URL — flagged H3 in the security review. Will likely move to POST /service/users/lookup with email in body."
+          }
+        },
+        {
+          "name": "Mint Test Users (dev-only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Service-Key", "value": "{{serviceKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"count\": 5,\n  \"prefix\": \"loadtest\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/service/test-users/mint", "host": ["{{baseUrl}}"], "path": ["api", "v1", "service", "test-users", "mint"] },
+            "description": "Blocked in production by MintTestUsersRequest::authorize(). Rate-limited to 10/min per service key."
+          }
+        }
+      ]
+    }
+  ]
+}
