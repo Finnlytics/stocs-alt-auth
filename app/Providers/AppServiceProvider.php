@@ -31,9 +31,19 @@ class AppServiceProvider extends ServiceProvider
             ];
         });
 
-        // Service endpoints: 100 per minute per API key
+        // Service endpoints: default 100 per minute per API key
         RateLimiter::for('service', function (Request $request) {
             return Limit::perMinute(100)->by($request->header('X-Service-Key', $request->ip()));
+        });
+
+        // Service token validation: hotter path — 600/min per API key
+        RateLimiter::for('service-validate', function (Request $request) {
+            return Limit::perMinute(600)->by($request->header('X-Service-Key', $request->ip()));
+        });
+
+        // Service test-user mint: dev-only, tighter cap to avoid DB exhaustion
+        RateLimiter::for('service-mint', function (Request $request) {
+            return Limit::perMinute(10)->by($request->header('X-Service-Key', $request->ip()));
         });
     }
 }

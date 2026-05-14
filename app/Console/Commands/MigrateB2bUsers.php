@@ -78,10 +78,15 @@ class MigrateB2bUsers extends Command
                     'email' => $b2bUser->email,
                     'password' => $b2bUser->password, // Already hashed
                     'email_verified_at' => $b2bUser->email_verified_at,
-                    'is_super_admin' => (bool) $b2bUser->is_super_admin,
                     'created_at' => $b2bUser->created_at,
                     'updated_at' => $b2bUser->updated_at,
                 ]);
+
+                // is_super_admin is guarded (not mass-assignable) — set explicitly.
+                if ($b2bUser->is_super_admin) {
+                    $user->is_super_admin = true;
+                    $user->save();
+                }
 
                 // Prevent double-hashing — password is already hashed from B2B
                 DB::table('users')->where('id', $user->id)->update([

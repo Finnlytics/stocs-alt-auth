@@ -70,12 +70,16 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
 // Service-to-Service Endpoints (API key auth)
 // ──────────────────────────────────────────────
 
-Route::prefix('v1/service')->middleware('service-key')->group(function () {
-    Route::post('/validate-token', [TokenValidationController::class, 'validate']);
+Route::prefix('v1/service')->middleware(['service-key', 'throttle:service'])->group(function () {
+    Route::post('/validate-token', [TokenValidationController::class, 'validate'])
+        ->middleware('throttle:service-validate')
+        ->withoutMiddleware('throttle:service');
     Route::get('/users/{uuid}', [UserLookupController::class, 'showByUuid']);
     Route::get('/users/by-email/{email}', [UserLookupController::class, 'showByEmail']);
 
     // Dev-only: mint N Bids-scoped tokens for load testing. TestUsersController
     // guards against APP_ENV=production; the service-key check is belt-and-braces.
-    Route::post('/test-users/mint', [TestUsersController::class, 'mint']);
+    Route::post('/test-users/mint', [TestUsersController::class, 'mint'])
+        ->middleware('throttle:service-mint')
+        ->withoutMiddleware('throttle:service');
 });

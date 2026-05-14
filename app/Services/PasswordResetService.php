@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Mail\PasswordResetEmail;
 use App\Repositories\PasswordResetTokenRepository;
 use App\Repositories\UserRepository;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -16,11 +17,20 @@ class PasswordResetService
     public function __construct(
         private readonly UserRepository $userRepository,
         private readonly PasswordResetTokenRepository $passwordResetTokens,
+        private readonly AuditService $auditService,
     ) {}
 
-    public function sendResetLink(string $email): void
+    public function sendResetLink(string $email, ?Request $request = null): void
     {
         $user = $this->userRepository->findByEmail($email);
+
+        $this->auditService->log(
+            'password_reset_requested',
+            'Password reset requested',
+            $user?->id,
+            metadata: ['user_found' => $user !== null],
+            request: $request
+        );
 
         // Don't reveal if user exists — always show success
         if (! $user) {
@@ -34,7 +44,7 @@ class PasswordResetService
         Mail::to($email)->queue(new PasswordResetEmail($user, $token));
     }
 
-    public function reset(string $email, string $token, string $newPassword): bool
+    public function reset(string $email, string $token, string $newPassword, ?Request $request = null): bool
     {
         $record = $this->passwordResetTokens->findByEmail($email);
 
@@ -60,6 +70,13 @@ class PasswordResetService
         $user->tokens()->delete();
 
         $this->passwordResetTokens->deleteByEmail($email);
+
+        $this->auditService->log(
+            'password_reset_completed',
+            'Password reset completed',
+            $user->id,
+            request: $request
+        );
 
         return true;
     }

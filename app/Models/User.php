@@ -18,13 +18,15 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
 
+    // SECURITY: is_super_admin is intentionally NOT mass-assignable.
+    // It must be set explicitly via $user->is_super_admin = ... + $user->save(),
+    // gated by a server-side check that the actor is already a super-admin.
     protected $fillable = [
         'uuid',
         'name',
         'email',
         'phone',
         'password',
-        'is_super_admin',
         'marketing_preferences',
         'gdpr_consent_at',
     ];

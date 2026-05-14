@@ -25,8 +25,9 @@ class AdminUsersTest extends TestCase
             'name' => 'Admin',
             'email' => 'admin@stocs.com',
             'password' => 'AdminPass1234',
-            'is_super_admin' => true,
         ]);
+        $this->admin->is_super_admin = true;
+        $this->admin->save();
 
         UserPlatform::create([
             'user_id' => $this->admin->id,

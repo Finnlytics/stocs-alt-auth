@@ -26,8 +26,11 @@ class DemoUsersSeeder extends Seeder
 {
     // Stable UUIDs — keep in sync with stocs-bids DEMO_USER_UUID default.
     private const ADMIN_UUID = '00000000-0000-4000-8000-0000000000a0';
+
     private const WHOLESALE_UUID = '00000000-0000-4000-8000-0000000000b0';
+
     private const BIDDER_UUID = '00000000-0000-4000-8000-000000000001';
+
     private const BIDDER_2_UUID = '00000000-0000-4000-8000-000000000002';
 
     public function run(PlatformAccessService $platformAccess, UserPlatformRepository $platforms): void
@@ -39,10 +42,12 @@ class DemoUsersSeeder extends Seeder
                 'uuid' => self::ADMIN_UUID,
                 'name' => 'Admin User',
                 'password' => 'testing1!',
-                'is_super_admin' => true,
                 'email_verified_at' => now(),
             ],
         );
+        // is_super_admin is guarded (not mass-assignable) — set explicitly.
+        $admin->is_super_admin = true;
+        $admin->save();
         $platformAccess->grantAdminAccess($admin);
 
         // Wholesaler — password auth, B2B approved (not pending) so they can actually log in,

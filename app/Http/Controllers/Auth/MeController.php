@@ -3,13 +3,14 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Auth\UpdateMarketingPreferencesRequest;
+use App\Http\Requests\Auth\UpdatePasswordRequest;
 use App\Http\Requests\Auth\UpdateProfileRequest;
 use App\Http\Resources\UserResource;
 use App\Repositories\UserRepository;
 use App\Services\AuthService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rules\Password;
 
 class MeController extends Controller
 {
@@ -35,19 +36,10 @@ class MeController extends Controller
         ]);
     }
 
-    public function updatePassword(Request $request): JsonResponse
+    public function updatePassword(UpdatePasswordRequest $request): JsonResponse
     {
-        $request->validate([
-            'current_password' => ['required', 'current_password'],
-            'password' => [
-                'required',
-                'confirmed',
-                Password::min(10)->mixedCase()->numbers()->uncompromised(),
-            ],
-        ]);
-
         $this->userRepository->update($request->user(), [
-            'password' => $request->input('password'),
+            'password' => $request->validated('password'),
         ]);
 
         // Revoke all other tokens, keep current one
@@ -58,14 +50,10 @@ class MeController extends Controller
         return response()->json(['message' => 'Password updated.']);
     }
 
-    public function updateMarketing(Request $request): JsonResponse
+    public function updateMarketing(UpdateMarketingPreferencesRequest $request): JsonResponse
     {
-        $request->validate([
-            'preferences' => ['required', 'array'],
-        ]);
-
         $this->userRepository->update($request->user(), [
-            'marketing_preferences' => $request->input('preferences'),
+            'marketing_preferences' => $request->validated('preferences'),
         ]);
 
         return response()->json(['message' => 'Marketing preferences updated.']);

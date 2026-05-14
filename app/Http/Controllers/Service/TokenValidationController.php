@@ -3,20 +3,16 @@
 namespace App\Http\Controllers\Service;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Service\ValidateTokenRequest;
 use App\Http\Resources\UserResource;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Laravel\Sanctum\PersonalAccessToken;
 
 class TokenValidationController extends Controller
 {
-    public function validate(Request $request): JsonResponse
+    public function validate(ValidateTokenRequest $request): JsonResponse
     {
-        $request->validate([
-            'token' => ['required', 'string'],
-        ]);
-
-        $token = PersonalAccessToken::findToken($request->input('token'));
+        $token = PersonalAccessToken::findToken($request->validated('token'));
 
         if (! $token) {
             return response()->json(['valid' => false, 'message' => 'Token not found.'], 401);

@@ -176,8 +176,14 @@ class AuthService
             'email' => $data['email'],
             'password' => $data['password'],
             'email_verified_at' => now(),
-            'is_super_admin' => $createdBy->isSuperAdmin() && ($data['is_super_admin'] ?? false),
         ]);
+
+        // SECURITY: is_super_admin is set out-of-band of mass assignment and is
+        // only honoured when the actor is already a super-admin. See User::$fillable.
+        if ($createdBy->isSuperAdmin() && ($data['is_super_admin'] ?? false)) {
+            $user->is_super_admin = true;
+            $user->save();
+        }
 
         $this->platformAccessService->grantAdminAccess($user);
 

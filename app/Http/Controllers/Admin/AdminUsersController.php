@@ -4,8 +4,10 @@ namespace App\Http\Controllers\Admin;
 
 use App\Enums\Platform;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Admin\ApproveUserRequest;
 use App\Http\Requests\Admin\CreateAdminRequest;
 use App\Http\Requests\Admin\RejectUserRequest;
+use App\Http\Requests\Admin\SuspendUserRequest;
 use App\Http\Requests\Admin\UpdateUserRequest;
 use App\Http\Resources\UserResource;
 use App\Mail\AccountApprovedEmail;
@@ -73,7 +75,7 @@ class AdminUsersController extends Controller
         ]);
     }
 
-    public function approve(Request $request, string $uuid): JsonResponse
+    public function approve(ApproveUserRequest $request, string $uuid): JsonResponse
     {
         $user = $this->userRepository->findByUuid($uuid);
 
@@ -81,7 +83,7 @@ class AdminUsersController extends Controller
             return response()->json(['message' => 'User not found.'], 404);
         }
 
-        $platform = $request->input('platform', 'b2b');
+        $platform = $request->validated('platform', 'b2b');
         $access = $this->platformAccessService->getPlatformAccess($user, Platform::from($platform));
 
         if (! $access) {
@@ -141,7 +143,7 @@ class AdminUsersController extends Controller
         ]);
     }
 
-    public function suspend(Request $request, string $uuid): JsonResponse
+    public function suspend(SuspendUserRequest $request, string $uuid): JsonResponse
     {
         $user = $this->userRepository->findByUuid($uuid);
 
@@ -149,7 +151,7 @@ class AdminUsersController extends Controller
             return response()->json(['message' => 'User not found.'], 404);
         }
 
-        $platform = $request->input('platform', 'b2b');
+        $platform = $request->validated('platform', 'b2b');
         $access = $this->platformAccessService->getPlatformAccess($user, Platform::from($platform));
 
         if (! $access) {

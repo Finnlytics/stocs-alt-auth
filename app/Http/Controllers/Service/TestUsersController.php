@@ -3,10 +3,10 @@
 namespace App\Http\Controllers\Service;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Service\MintTestUsersRequest;
 use App\Models\User;
 use App\Services\PlatformAccessService;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 /**
@@ -19,23 +19,13 @@ use Illuminate\Support\Str;
  */
 class TestUsersController extends Controller
 {
-    private const MAX_COUNT = 200;
-
     public function __construct(
         private readonly PlatformAccessService $platformAccessService,
     ) {}
 
-    public function mint(Request $request): JsonResponse
+    public function mint(MintTestUsersRequest $request): JsonResponse
     {
-        if (app()->isProduction()) {
-            return response()->json(['message' => 'Disabled in production.'], 403);
-        }
-
-        $data = $request->validate([
-            'count' => ['required', 'integer', 'min:1', 'max:'.self::MAX_COUNT],
-            'prefix' => ['sometimes', 'string', 'max:32'],
-        ]);
-
+        $data = $request->validated();
         $prefix = $data['prefix'] ?? 'loadtest';
         $users = [];
 
