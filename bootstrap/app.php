@@ -10,6 +10,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Request;
+use Illuminate\Auth\AuthenticationException;
 use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -21,6 +22,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Headless API — never redirect unauthenticated requests to a login page.
+        // Without this, Authenticate middleware calls route('login') and throws
+        // RouteNotFoundException before AuthenticationException can be handled.
+        $middleware->redirectGuestsTo(fn () => null);
+
         $middleware->alias([
             'admin' => EnsureAdmin::class,
             'super-admin' => EnsureSuperAdmin::class,
@@ -39,6 +45,12 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions): void {
         // Headless API — every exception, every status code, every path renders as JSON.
         $exceptions->shouldRenderJsonWhen(fn () => true);
+
+        // Sanctum redirects to route('login') on 401 by default; intercept it here
+        // before the RouteNotFoundException fires.
+        $exceptions->render(function (AuthenticationException $e, Request $request) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        });
 
         $exceptions->render(function (NotFoundHttpException $e, Request $request) {
             return response()->json(['message' => 'Not found.'], 404);
