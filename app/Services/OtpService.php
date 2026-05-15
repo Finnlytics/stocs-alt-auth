@@ -2,11 +2,10 @@
 
 namespace App\Services;
 
-use App\Mail\OtpCodeEmail;
+use App\Contracts\OtpNotifier;
 use App\Repositories\OtpRepository;
 use App\Repositories\UserRepository;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Mail;
 
 class OtpService
 {
@@ -16,7 +15,8 @@ class OtpService
 
     public function __construct(
         private readonly OtpRepository $otpRepository,
-        private readonly UserRepository $userRepository
+        private readonly UserRepository $userRepository,
+        private readonly OtpNotifier $notifier,
     ) {}
 
     // Rate limiting (5/hour per identifier) is enforced by the `throttle:otp` middleware
@@ -38,9 +38,7 @@ class OtpService
             'created_at' => now(),
         ]);
 
-        if ($identifierType === 'email') {
-            Mail::to($identifier)->queue(new OtpCodeEmail($code));
-        }
+        $this->notifier->send($identifier, $identifierType, $code);
     }
 
     /**

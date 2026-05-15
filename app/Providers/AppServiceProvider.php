@@ -2,6 +2,9 @@
 
 namespace App\Providers;
 
+use App\Contracts\OtpNotifier;
+use App\Otp\FileOtpNotifier;
+use App\Otp\MailOtpNotifier;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -11,7 +14,11 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        //
+        $this->app->bind(OtpNotifier::class, function () {
+            return config('otp.notifier') === 'file'
+                ? new FileOtpNotifier()
+                : new MailOtpNotifier();
+        });
     }
 
     public function boot(): void
