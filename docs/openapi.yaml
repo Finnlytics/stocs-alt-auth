@@ -199,6 +199,13 @@ paths:
                   type: string
                   enum: [email, phone]
                   default: email
+                name:
+                  type: string
+                  maxLength: 100
+                  description: |
+                    Optional display name supplied by the Bids join (sign-up) flow.
+                    Only used when this OTP creates a brand-new user; ignored if the
+                    user already exists. Falls back to the email local-part when omitted.
       responses:
         '200':
           description: OTP verified
@@ -211,10 +218,12 @@ paths:
                     properties:
                       is_new_user: { type: boolean }
         '422':
-          description: Invalid, expired, or exhausted OTP
+          description: Invalid, expired, or exhausted OTP (response body is identical in all three cases)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/MessageResponse' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /v1/auth/password/forgot:
     post:

@@ -51,7 +51,7 @@ Demonstrates auto-registration: a brand-new email address gets a Bids account cr
 | 4 | Public Auth → **Verify OTP** — change `identifier` to `newbidder@example.test` | 200, `is_new_user: true`, captures `userToken` + `userUuid` | Token has `platform:bids` ability. |
 | 5 | Me → **Get Me** | 200, `platforms` includes `bids: approved`, no B2B entry | Uses the Bids `userToken`. |
 
-> If step 4 returns 422 with no `attempts_remaining` field, the code expired (10-minute window). Re-run step 2 to get a fresh code.
+> If step 4 returns 422, the code is wrong, expired, or attempt-exhausted (the response body is identical in all three cases). Re-run step 2 to get a fresh code.
 
 ---
 
@@ -76,15 +76,18 @@ Run these after Flow 2 (a fresh `bidder@stocs.test` OTP code is needed).
 
 | # | Scenario | Request | Expected |
 |---|----------|---------|----------|
-| 1 | Wrong code | **Verify OTP** — set `otpCode` to `000000` | 422, response includes `attempts_remaining: 2` |
-| 2 | Wrong code again | Same request | 422, `attempts_remaining: 1` |
-| 3 | Exhaust attempts | Same request | 422, no `attempts_remaining` (code locked) |
+| 1 | Wrong code | **Verify OTP** — set `otpCode` to `000000` | 422 |
+| 2 | Wrong code again | Same request | 422 |
+| 3 | Exhaust attempts (3rd wrong) | Same request | 422 — code is locked after 3 wrong attempts |
 | 4 | Locked code | **Verify OTP** with the real code from step 0 | 422 — code is dead even if value is correct; request a new one |
 | 5 | Expired code | **Request OTP**, wait 11+ minutes, **Verify OTP** | 422 |
-| 6 | Rate limit | Fire **Request OTP** for the same identifier 7 times rapidly | 6th request returns **429** |
-| 7 | Unknown identifier still 202 | **Request OTP** — `identifier: nobody@nowhere.test` | **202** — response is indistinguishable from valid identifier |
+| 6 | IP throttle on Verify | 6th call to **Verify OTP** within a minute (regardless of code value) | **429** — `throttle:auth` middleware caps the `/auth/*` group at 5/min per IP. The frontend should map this to a "wait a minute" message and not a "wrong code" message. |
+| 7 | Rate limit on Request | Fire **Request OTP** for the same identifier 7 times rapidly | 6th request returns **429** — `throttle:otp` middleware (5/hour, 3/min per identifier) |
+| 8 | Unknown identifier still 202 | **Request OTP** — `identifier: nobody@nowhere.test` | **202** — response is indistinguishable from valid identifier |
 
 > After exhausting attempts (step 3), call **Request OTP** again to get a fresh code before continuing.
+>
+> Note: the API does **not** currently return `attempts_remaining` — every wrong/locked/expired case returns the same `422 {"message": "Invalid or expired OTP code."}` body. The frontend treats them all identically and prompts the user to request a new code.
 
 ---
 
@@ -172,7 +175,8 @@ Pre-req: `serviceKey` set. Blocked in `APP_ENV=production`.
 ## When something fails
 
 1. **422 on Verify OTP** — either wrong code, exceeded attempts, or expired. Re-run Request OTP to get a fresh code.
-2. **401 on Service routes** — check `X-Service-Key` header is set and `serviceKey` env var is not empty. Keys are single-use-printout; if you lost it, issue a new one with `php artisan auth:issue-service-key`.
-3. **Stale `userToken`** — running Verify OTP for a new user overwrites `userToken`. If you need the old token back, re-run the OTP flow for that user.
-4. **429 on Request OTP** — the `throttle:otp` middleware caps at 5 requests per hour per identifier. Switch to a different email or reseed (`migrate:fresh --seed`) to reset rate limit state.
-5. **Suspend not revoking tokens** — ensure the queue worker is running (`php artisan queue:work`) or set `QUEUE_CONNECTION=sync` in `.env`. Token revocation may be queued.
+2. **429 on Verify OTP** — the `throttle:auth` middleware caps the whole `/auth/*` group at 5/min per IP. Hitting Verify OTP six times in a minute (wrong codes, retries, whatever) returns 429 *regardless of whether the code is right*. This is the correct backend behaviour; the frontend handles it with a "too many attempts, wait a minute" message.
+3. **401 on Service routes** — check `X-Service-Key` header is set and `serviceKey` env var is not empty. Keys are single-use-printout; if you lost it, issue a new one with `php artisan auth:issue-service-key`.
+4. **Stale `userToken`** — running Verify OTP for a new user overwrites `userToken`. If you need the old token back, re-run the OTP flow for that user.
+5. **429 on Request OTP** — the `throttle:otp` middleware caps at 5 requests per hour per identifier. Switch to a different email or reseed (`migrate:fresh --seed`) to reset rate limit state.
+6. **Suspend not revoking tokens** — ensure the queue worker is running (`php artisan queue:work`) or set `QUEUE_CONNECTION=sync` in `.env`. Token revocation may be queued.

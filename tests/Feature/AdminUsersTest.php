@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use App\Models\UserPlatform;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -113,6 +114,41 @@ class AdminUsersTest extends TestCase
             'status' => 'rejected',
             'rejection_reason' => 'Incomplete profile',
         ]);
+    }
+
+    public function test_approving_user_clears_otp_rate_limit(): void
+    {
+        $user = User::create([
+            'uuid' => Str::uuid()->toString(),
+            'name' => 'Suspended Bidder',
+            'email' => 'suspended@example.com',
+            'password' => null,
+        ]);
+
+        UserPlatform::create([
+            'user_id' => $user->id,
+            'platform' => 'bids',
+            'role' => 'consumer',
+            'status' => 'suspended',
+        ]);
+
+        // Exhaust the OTP rate limit for this identifier (5/hour key from
+        // AppServiceProvider's `throttle:otp` limiter).
+        for ($i = 0; $i < 5; $i++) {
+            RateLimiter::hit('otp:hour:'.$user->email, 3600);
+            RateLimiter::hit('otp:minute:'.$user->email, 60);
+        }
+        $this->assertTrue(RateLimiter::tooManyAttempts('otp:hour:'.$user->email, 5));
+
+        $response = $this->postJson("/api/v1/admin/users/{$user->uuid}/approve", [
+            'platform' => 'bids',
+        ], [
+            'Authorization' => "Bearer {$this->adminToken}",
+        ]);
+
+        $response->assertOk();
+        $this->assertFalse(RateLimiter::tooManyAttempts('otp:hour:'.$user->email, 5));
+        $this->assertFalse(RateLimiter::tooManyAttempts('otp:minute:'.$user->email, 3));
     }
 
     public function test_non_admin_cannot_access_admin_endpoints(): void

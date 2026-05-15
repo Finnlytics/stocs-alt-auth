@@ -15,6 +15,7 @@ use App\Mail\AccountRejectedEmail;
 use App\Repositories\UserRepository;
 use App\Services\AuditService;
 use App\Services\AuthService;
+use App\Services\OtpService;
 use App\Services\PlatformAccessService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,7 +27,8 @@ class AdminUsersController extends Controller
         private readonly UserRepository $userRepository,
         private readonly AuthService $authService,
         private readonly PlatformAccessService $platformAccessService,
-        private readonly AuditService $auditService
+        private readonly AuditService $auditService,
+        private readonly OtpService $otpService
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -91,6 +93,10 @@ class AdminUsersController extends Controller
         }
 
         $access->approve();
+
+        // BUSINESS RULE: Approving (especially after suspension) must clear the
+        // OTP rate limit so the user can immediately request a fresh code.
+        $this->otpService->clearRateLimitFor($user->email);
 
         Mail::to($user->email)->queue(new AccountApprovedEmail($user, $platform));
 

@@ -107,6 +107,30 @@ Users have access to platforms via the `user_platforms` pivot table:
 - Max 5 OTP requests per identifier per hour
 - New users created on first successful OTP verification
 
+## Operator Admins
+
+Operator admin accounts (super-admins with approved access on every platform) are seeded by `AdminUsersSeeder` from `config/admins.php`. Each config entry pulls its email, password, and name from numbered env vars; entries with a missing email or password are silently skipped, so unused slots stay inert in production.
+
+**Config**: [config/admins.php](src/config/admins.php) — one array entry per admin slot.
+
+**Env**:
+
+```
+ADMIN_1_EMAIL=dom.finn@stocs.com
+ADMIN_1_PASSWORD="37 Perkins Way!"
+ADMIN_1_NAME="Dominic Finn"
+ADMIN_2_EMAIL=john.wilson@stocs.com
+ADMIN_2_PASSWORD=...
+ADMIN_2_NAME="John Wilson"
+```
+
+**Adding a new admin**:
+1. Append a new entry in `config/admins.php` (`ADMIN_3_EMAIL` etc.).
+2. Set the matching env vars in `.env` (and in production env management).
+3. `php artisan db:seed --class=AdminUsersSeeder` — or just re-run `migrate:fresh --seed`.
+
+**Idempotency**: matches on email and preserves the existing UUID across re-seeds, so issued Sanctum tokens stay valid. The password is reapplied on every seed run, so changing `ADMIN_N_PASSWORD` in env and re-seeding rotates the password — useful for ops, but means seeders running on every deploy will overwrite any in-app password change. Demo accounts in `DemoUsersSeeder` are intentionally separate (not loaded in production).
+
 ## B2B Migration Plan
 
 Migrating existing B2B users into stocs-auth is a multi-step process.
@@ -171,3 +195,28 @@ cd stocs-b2b/src && STOCS_AUTH_URL=http://localhost:8098 php artisan serve
 - Local: SQLite at `src/database/database.sqlite`
 - Production: MySQL 8.0
 - Testing: In-memory SQLite
+
+## Email (SMTP — Gmail)
+
+All STOCS apps share the **same Gmail SMTP credentials** for outbound mail — copy the `MAIL_*` env vars from `stocs-b2b` on Digital Ocean as-is. Not SendGrid (despite a legacy block in `stocs-b2b`'s mail config).
+
+Production env vars on DO:
+
+```
+MAIL_MAILER=smtp
+MAIL_HOST=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USERNAME=no-reply@stocs.com
+MAIL_PASSWORD=<gmail-app-password>
+MAIL_SCHEME=null
+MAIL_FROM_ADDRESS="no-reply@stocs.com"
+MAIL_FROM_NAME="${APP_NAME}"
+```
+
+`MAIL_PASSWORD` is a Gmail **app password** (2FA is enabled on the `no-reply@stocs.com` account). Generate or rotate at <https://myaccount.google.com/apppasswords>.
+
+`OTP_NOTIFIER` controls OTP delivery channel:
+- `file` (local dev) — writes codes to `storage/otp-codes.txt`
+- `mail` (default in prod) — queues an OTP email via the SMTP mailer above
+
+Full setup notes live in [`stocs-b2b/.claude/docs/deployment.md`](../../stocs-b2b/.claude/docs/deployment.md#email-smtp--gmail).

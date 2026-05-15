@@ -35,7 +35,8 @@ class OtpController extends Controller
         $result = $this->authService->completeBidsRegistration(
             $request->validated('identifier'),
             $request->validated('code'),
-            $request
+            $request,
+            $request->validated('name')
         );
 
         if (! $result) {

@@ -91,9 +91,10 @@ OTP is the only auth mechanism for Bids consumers.
 
 ### Negative cases worth touching
 
-- **Wrong code** → 422 with `attempts_remaining` decreasing. After 3 wrong attempts the code is dead — request a new one.
+- **Wrong code** → 422. After 3 wrong attempts the code is dead — request a new one. (The response body is identical for wrong, locked, and expired codes; the API does not expose an `attempts_remaining` field today.)
 - **Expired code** → 422. Codes live 10 minutes.
-- **Rate limit** → 6th request to the same identifier inside an hour returns 429.
+- **Verify OTP rate limit** → 6th call to **Verify OTP** within a minute returns 429 from `throttle:auth` (5/min per IP), even if the code is correct. This is correct behaviour — the frontend handles it as "too many attempts, wait a minute". Do not interpret it as a wrong-code response.
+- **Request OTP rate limit** → 6th request to the same identifier inside an hour returns 429.
 
 ---
 

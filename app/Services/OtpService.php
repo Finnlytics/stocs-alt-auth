@@ -6,6 +6,7 @@ use App\Contracts\OtpNotifier;
 use App\Repositories\OtpRepository;
 use App\Repositories\UserRepository;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
 
 class OtpService
 {
@@ -68,6 +69,16 @@ class OtpService
         $otpToken->update(['verified_at' => now()]);
 
         return ['verified' => true, 'user_id' => $otpToken->user_id];
+    }
+
+    // BUSINESS RULE: When admin re-approves a previously suspended user, their
+    // OTP rate-limit counters (5/hour, 3/min per identifier — set in
+    // AppServiceProvider) must be cleared so they can immediately request a new
+    // code. Keys here must mirror AppServiceProvider's `throttle:otp` limiter.
+    public function clearRateLimitFor(string $identifier): void
+    {
+        RateLimiter::clear('otp:hour:'.$identifier);
+        RateLimiter::clear('otp:minute:'.$identifier);
     }
 
     private function generateCode(): string

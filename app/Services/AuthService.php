@@ -59,7 +59,7 @@ class AuthService
         $this->otpService->sendOtp($identifier, $identifierType);
     }
 
-    public function completeBidsRegistration(string $identifier, string $code, ?Request $request = null): ?array
+    public function completeBidsRegistration(string $identifier, string $code, ?Request $request = null, ?string $name = null): ?array
     {
         $result = $this->otpService->verifyOtp($identifier, $code);
 
@@ -72,13 +72,15 @@ class AuthService
         if ($result['user_id']) {
             $user = $this->userRepository->findById($result['user_id']);
         } else {
-            // New user — create from OTP identifier
+            // New user — create from OTP identifier. Use the name supplied by the
+            // join flow if present; otherwise fall back to the local-part of the email.
             $user = $this->userRepository->findByEmail($identifier);
 
             if (! $user) {
+                $providedName = $name !== null ? trim($name) : '';
                 $user = $this->userRepository->create([
                     'uuid' => Str::uuid()->toString(),
-                    'name' => explode('@', $identifier)[0],
+                    'name' => $providedName !== '' ? $providedName : explode('@', $identifier)[0],
                     'email' => $identifier,
                     'email_verified_at' => now(),
                 ]);
