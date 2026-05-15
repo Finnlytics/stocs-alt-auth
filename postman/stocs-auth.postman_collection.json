@@ -9,6 +9,29 @@
     "type": "bearer",
     "bearer": [{ "key": "token", "value": "{{userToken}}", "type": "string" }]
   },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Collection-level smoke assertion. Each request may override via the per-request `expectedStatuses` env var.",
+          "// Default: any 2xx is a pass. Set `expectedStatuses` (CSV, e.g. \"200,403\") to allow specific non-2xx for negative-path testing.",
+          "const override = pm.environment.get('expectedStatuses');",
+          "const allowed = override ? override.split(',').map(s => parseInt(s.trim(), 10)) : null;",
+          "pm.test(`HTTP ${pm.response.code} on ${pm.request.method} ${pm.request.url.getPath()}`, () => {",
+          "  if (allowed) {",
+          "    pm.expect(allowed, 'response code not in allowed list').to.include(pm.response.code);",
+          "  } else {",
+          "    pm.expect(pm.response.code, 'expected 2xx').to.be.within(200, 299);",
+          "  }",
+          "});",
+          "// Clear the override so it doesn't bleed into the next request.",
+          "if (override) pm.environment.unset('expectedStatuses');"
+        ]
+      }
+    }
+  ],
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:8098", "type": "string" }
   ],
