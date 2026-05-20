@@ -54,11 +54,6 @@ class AuthService
         ];
     }
 
-    public function registerBids(string $identifier, string $identifierType = 'email'): void
-    {
-        $this->otpService->sendOtp($identifier, $identifierType);
-    }
-
     public function completeBidsRegistration(string $identifier, string $code, ?Request $request = null, ?string $name = null): array
     {
         $result = $this->otpService->verifyOtp($identifier, $code);

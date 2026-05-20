@@ -28,8 +28,11 @@ Route::prefix('v1/auth')->middleware('throttle:auth')->group(function () {
     Route::post('/register/b2b', B2bRegisterController::class);
     Route::post('/login/b2b', B2bLoginController::class);
 
-    // Bids OTP auth
-    Route::post('/otp/request', [OtpController::class, 'request'])->middleware('throttle:otp');
+    // Bids OTP auth — split by intent so the request endpoint never creates a
+    // user without explicit sign-up intent, and the sign-in path doesn't
+    // generate OTPs (or spam emails) for unknown addresses.
+    Route::post('/otp/request/login', [OtpController::class, 'requestForLogin'])->middleware('throttle:otp');
+    Route::post('/otp/request/signup', [OtpController::class, 'requestForSignup'])->middleware('throttle:otp');
     Route::post('/otp/verify', [OtpController::class, 'verify']);
 
     // Password reset

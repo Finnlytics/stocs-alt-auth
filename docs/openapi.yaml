@@ -140,14 +140,21 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimited'
 
-  /v1/auth/otp/request:
+  /v1/auth/otp/request/login:
     post:
       tags: [Auth (Public)]
-      summary: Request an OTP for Bids auth
+      summary: Request a sign-in OTP for an existing Bids user
       description: |
-        Always returns 202 regardless of whether the identifier matches an existing user,
-        to avoid disclosing user existence.
-        Rate limited to 5/hour and 3/min per identifier.
+        Sends an OTP only if the identifier matches an existing user. For unknown
+        identifiers the endpoint silently returns the same 202 response without
+        sending any email — this prevents using the endpoint to enumerate
+        registered emails.
+
+        Rate limited to 5/hour and 3/min per identifier via the in-memory
+        throttle, and additionally subject to a database-backed exponential
+        backoff that ramps `30s → 2m → 10m → 1h → 6h → 24h` for unverified
+        requests against an existing user. The backoff resets on successful
+        verification or after 24h of inactivity.
       security: []
       requestBody:
         required: true
@@ -164,6 +171,44 @@ paths:
                   default: email
       responses:
         '202':
+          description: OTP accepted for delivery (or silently dropped for unknown identifiers — response shape is identical)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: "If an account exists for that email, we've sent a sign-in code." }
+                  expires_in: { type: integer, example: 600, description: Seconds until OTP expires }
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /v1/auth/otp/request/signup:
+    post:
+      tags: [Auth (Public)]
+      summary: Request a sign-up OTP for a new Bids user
+      description: |
+        Sends an OTP for a new account. Refuses with 409 if an account already
+        exists for the identifier (the caller should redirect to the sign-in
+        flow). Subject to the same database-backed exponential backoff as the
+        sign-in endpoint.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string }
+                type:
+                  type: string
+                  enum: [email, phone]
+                  default: email
+      responses:
+        '202':
           description: OTP accepted for delivery
           content:
             application/json:
@@ -171,7 +216,16 @@ paths:
                 type: object
                 properties:
                   message: { type: string, example: OTP sent. }
-                  expires_in: { type: integer, example: 600, description: Seconds until OTP expires }
+                  expires_in: { type: integer, example: 600 }
+        '409':
+          description: An account already exists for that identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  code: { type: string, example: account_exists }
         '422':
           $ref: '#/components/responses/ValidationError'
         '429':
