@@ -184,6 +184,8 @@ paths:
       description: |
         Creates the user on first successful verification if they don't exist.
         Issued token carries `platform:bids` ability.
+        Blocked with 403 if the user's Bids access is suspended or rejected —
+        a verified OTP does not lift an existing suspension.
       security: []
       requestBody:
         required: true
@@ -217,6 +219,17 @@ paths:
                   - type: object
                     properties:
                       is_new_user: { type: boolean }
+        '403':
+          description: Bids access is suspended or rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  status:
+                    type: string
+                    enum: [rejected, suspended]
         '422':
           description: Invalid, expired, or exhausted OTP (response body is identical in all three cases)
           content:

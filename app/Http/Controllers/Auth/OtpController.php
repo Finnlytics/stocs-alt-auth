@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Auth;
 
+use App\Enums\LoginResult;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\OtpRequestRequest;
 use App\Http\Requests\Auth\OtpVerifyRequest;
@@ -39,17 +40,24 @@ class OtpController extends Controller
             $request->validated('name')
         );
 
-        if (! $result) {
-            return response()->json([
+        return match ($result['result']) {
+            LoginResult::SUCCESS => response()->json([
+                'data' => new UserResource($result['user']),
+                'token' => $result['token'],
+                'is_new_user' => $result['is_new_user'],
+                'message' => $result['is_new_user'] ? 'Account created.' : 'Login successful.',
+            ]),
+            LoginResult::SUSPENDED => response()->json([
+                'message' => 'Your account is suspended. Please contact support.',
+                'status' => 'suspended',
+            ], 403),
+            LoginResult::REJECTED => response()->json([
+                'message' => 'Your account has been rejected. Please contact support.',
+                'status' => 'rejected',
+            ], 403),
+            default => response()->json([
                 'message' => 'Invalid or expired OTP code.',
-            ], 422);
-        }
-
-        return response()->json([
-            'data' => new UserResource($result['user']),
-            'token' => $result['token'],
-            'is_new_user' => $result['is_new_user'],
-            'message' => $result['is_new_user'] ? 'Account created.' : 'Login successful.',
-        ]);
+            ], 422),
+        };
     }
 }

@@ -200,6 +200,53 @@ class OtpAuthTest extends TestCase
         $response->assertStatus(422);
     }
 
+    public function test_otp_verify_blocks_suspended_user_and_does_not_re_approve(): void
+    {
+        $user = User::create([
+            'uuid' => Str::uuid()->toString(),
+            'name' => 'Suspended User',
+            'email' => 'suspended-bids@example.com',
+            'password' => null,
+        ]);
+
+        $user->platforms()->create([
+            'platform' => 'bids',
+            'role' => 'consumer',
+            'status' => 'suspended',
+            'approved_at' => now()->subDay(),
+        ]);
+
+        $code = '424242';
+
+        OtpToken::create([
+            'user_id' => $user->id,
+            'identifier' => 'suspended-bids@example.com',
+            'identifier_type' => 'email',
+            'code_hash' => Hash::make($code),
+            'expires_at' => now()->addMinutes(10),
+            'created_at' => now(),
+        ]);
+
+        $response = $this->postJson('/api/v1/auth/otp/verify', [
+            'identifier' => 'suspended-bids@example.com',
+            'code' => $code,
+        ]);
+
+        $response->assertStatus(403);
+        $response->assertJsonPath('status', 'suspended');
+        $response->assertJsonMissingPath('token');
+
+        $this->assertDatabaseHas('user_platforms', [
+            'user_id' => $user->id,
+            'platform' => 'bids',
+            'status' => 'suspended',
+        ]);
+
+        $this->assertDatabaseMissing('personal_access_tokens', [
+            'tokenable_id' => $user->id,
+        ]);
+    }
+
     public function test_otp_verify_fails_with_expired_code(): void
     {
         OtpToken::create([
