@@ -158,16 +158,11 @@ class AdminUsersController extends Controller
         }
 
         $platform = $request->validated('platform', 'b2b');
-        $access = $this->platformAccessService->getPlatformAccess($user, Platform::from($platform));
+        $access = $this->platformAccessService->suspend($user, Platform::from($platform));
 
         if (! $access) {
             return response()->json(['message' => 'User has no access record for this platform.'], 404);
         }
-
-        $access->suspend();
-
-        // Revoke all tokens for this user
-        $user->tokens()->delete();
 
         $this->auditService->log(
             'suspended',

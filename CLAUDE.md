@@ -84,6 +84,8 @@ Full OpenAPI 3.1 spec at [src/docs/openapi.yaml](src/docs/openapi.yaml) — also
 - `POST /validate-token` — Validate a Sanctum token
 - `GET /users/{uuid}` — Lookup user by UUID
 - `GET /users/by-email/{email}` — Lookup by email
+- `POST /users/{uuid}/suspend` — Suspend a user's platform access (body: `platform` default `bids`, optional `reason`). Sets `user_platforms.status = 'suspended'` and revokes the user's tokens — OTP login then blocks re-entry until an admin lifts it. Used by Bids to suspend an auction winner who didn't pay. Shares `PlatformAccessService::suspend()` with the admin suspend endpoint.
+- `POST /users/{uuid}/reinstate` — Lift a suspension (body: `platform` default `bids`). Returns `user_platforms.status` to `approved`. Only acts on a currently-suspended account (422 otherwise). Used by the Bids admin "All users" page.
 
 Issue service keys via: `php artisan auth:issue-service-key <name> <b2b|bids>`. Keys are returned once in `{prefix}.{secret}` form; only the hashed secret is stored. Consumers send the full key in the `X-Service-Key` header.
 

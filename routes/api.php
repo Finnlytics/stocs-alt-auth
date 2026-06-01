@@ -11,6 +11,7 @@ use App\Http\Controllers\DocsController;
 use App\Http\Controllers\Service\TestUsersController;
 use App\Http\Controllers\Service\TokenValidationController;
 use App\Http\Controllers\Service\UserLookupController;
+use App\Http\Controllers\Service\UserSuspensionController;
 use Illuminate\Support\Facades\Route;
 
 // Health check
@@ -77,8 +78,17 @@ Route::prefix('v1/service')->middleware(['service-key', 'throttle:service'])->gr
     Route::post('/validate-token', [TokenValidationController::class, 'validate'])
         ->middleware('throttle:service-validate')
         ->withoutMiddleware('throttle:service');
+    Route::get('/users', [UserLookupController::class, 'index']);
     Route::get('/users/{uuid}', [UserLookupController::class, 'showByUuid']);
     Route::get('/users/by-email/{email}', [UserLookupController::class, 'showByEmail']);
+
+    // Suspend a user's platform access (e.g. Bids suspending a non-paying
+    // auction winner). Revokes tokens; OTP login then blocks re-entry.
+    Route::post('/users/{uuid}/suspend', [UserSuspensionController::class, 'suspend']);
+
+    // Lift a suspension (e.g. a Bids admin reinstating a bidder from the
+    // All users page). Returns the platform access to approved.
+    Route::post('/users/{uuid}/reinstate', [UserSuspensionController::class, 'reinstate']);
 
     // Dev-only: mint N Bids-scoped tokens for load testing. TestUsersController
     // guards against APP_ENV=production; the service-key check is belt-and-braces.
