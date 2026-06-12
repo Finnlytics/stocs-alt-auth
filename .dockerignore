@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+vendor
+node_modules
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+tests
+phpunit.xml
+*.sqlite
+.DS_Store
+README.md

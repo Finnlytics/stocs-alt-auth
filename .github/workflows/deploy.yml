@@ -1,0 +1,50 @@
+name: Build & Deploy (DOCR → App Platform)
+
+# Builds the production image, pushes it to the DigitalOcean Container Registry,
+# and triggers the App Platform deployment that pulls it. No buildpack / GitHub
+# source involved — App Platform deploys from the image we push here.
+#
+# Required repo secret:
+#   DIGITALOCEAN_ACCESS_TOKEN — a DO API token with registry + app write scope.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: registry.digitalocean.com/stocs-registry
+  IMAGE: stocs-auth
+  APP_ID: c7700101-e062-4d1d-b974-f8e36a449906
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DOCR
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy on App Platform
+        run: doctl apps create-deployment "$APP_ID" --wait
