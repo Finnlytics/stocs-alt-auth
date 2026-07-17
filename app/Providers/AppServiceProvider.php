@@ -28,16 +28,6 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(5)->by($request->ip());
         });
 
-        // OTP requests: business rule — max 5 per hour per identifier (also falls back to IP)
-        RateLimiter::for('otp', function (Request $request) {
-            $key = $request->input('identifier') ?: $request->ip();
-
-            return [
-                Limit::perHour(5)->by('otp:hour:'.$key),
-                Limit::perMinute(3)->by('otp:minute:'.$key),
-            ];
-        });
-
         // Service endpoints: default 100 per minute per API key
         RateLimiter::for('service', function (Request $request) {
             return Limit::perMinute(100)->by($request->header('X-Service-Key', $request->ip()));

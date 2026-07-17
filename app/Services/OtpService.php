@@ -4,12 +4,12 @@ namespace App\Services;
 
 use App\Contracts\OtpNotifier;
 use App\Enums\OtpRequestResult;
+use App\Enums\Platform;
+use App\Models\OtpRequestAttempt;
 use App\Repositories\OtpRepository;
 use App\Repositories\OtpRequestAttemptRepository;
 use App\Repositories\UserRepository;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\RateLimiter;
 
 class OtpService
 {
@@ -17,22 +17,15 @@ class OtpService
 
     private const MAX_ATTEMPTS = 3;
 
-    // BUSINESS RULE: exponential backoff against email-spam abuse. The Nth
-    // unverified request locks the identifier for $BACKOFF_SECONDS[N] seconds.
-    // First request is free (index 0). After 6+ unverified requests in a
-    // session we hold them at 24h. Counter resets on a successful verify or
-    // after 24h of inactivity (see resetIfStale()).
-    private const BACKOFF_SECONDS = [
-        0,        // 1st request: no delay until next
-        30,       // 2nd request: 30s
-        120,      // 3rd: 2 min
-        600,      // 4th: 10 min
-        3600,     // 5th: 1 hour
-        21600,    // 6th: 6 hours
-        86400,    // 7th+: 24 hours (cap)
-    ];
+    // BUSINESS RULE: single, predictable rate limit against email-spam abuse —
+    // a short cooldown between requests, plus a flat cap per rolling hour.
+    // Replaces a multi-tier exponential ramp (30s -> ... -> 24h) that, stacked
+    // on top of a second, separate route-level limiter, made the "try again
+    // in N seconds" figure shown to users unpredictable. One rule, one number.
+    // Resets on a successful verify (see verifyOtp()).
+    private const COOLDOWN_SECONDS = 30;
 
-    private const STALE_INACTIVITY_HOURS = 24;
+    private const HOURLY_CAP = 8;
 
     public function __construct(
         private readonly OtpRepository $otpRepository,
@@ -50,18 +43,23 @@ class OtpService
      */
     public function requestForLogin(string $identifier, string $identifierType = 'email'): array
     {
-        if (($backoff = $this->checkBackoff($identifier, $identifierType)) !== null) {
-            return $backoff;
+        if (($limited = $this->checkRateLimit($identifier, $identifierType)) !== null) {
+            return $limited;
         }
 
         $user = $this->userRepository->findByEmail($identifier);
 
         if ($user === null) {
-            // No tracking, no send. We don't increment backoff for non-existent
-            // users because that would let an attacker probe existence via the
-            // 429 boundary. The in-memory throttle:otp middleware still caps
-            // raw request volume per identifier/IP.
+            // No tracking, no send. We don't count unknown users against the
+            // rate limit because that would let an attacker probe existence
+            // via the 429 boundary.
             return ['result' => OtpRequestResult::ACCOUNT_NOT_FOUND];
+        }
+
+        if ($user->platformAccess(Platform::BIDS)?->isSuspended()) {
+            // No point sending a code the verify step will reject anyway
+            // (AuthService::completeBidsRegistration blocks suspended access).
+            return ['result' => OtpRequestResult::ACCOUNT_SUSPENDED];
         }
 
         $this->dispatch($identifier, $identifierType, $user->id);
@@ -83,8 +81,8 @@ class OtpService
             return ['result' => OtpRequestResult::ACCOUNT_ALREADY_EXISTS];
         }
 
-        if (($backoff = $this->checkBackoff($identifier, $identifierType)) !== null) {
-            return $backoff;
+        if (($limited = $this->checkRateLimit($identifier, $identifierType)) !== null) {
+            return $limited;
         }
 
         $this->dispatch($identifier, $identifierType, null);
@@ -118,28 +116,24 @@ class OtpService
 
         $otpToken->update(['verified_at' => now()]);
 
-        // BUSINESS RULE: a successful verify clears the exponential backoff
-        // counter — the user proved they own the inbox.
+        // BUSINESS RULE: a successful verify clears the rate limit — the user
+        // proved they own the inbox.
         $this->attemptRepository->reset($identifier, $identifierType);
 
         return ['verified' => true, 'user_id' => $otpToken->user_id];
     }
 
     // BUSINESS RULE: When admin re-approves a previously suspended user, their
-    // OTP rate-limit counters (5/hour, 3/min per identifier — set in
-    // AppServiceProvider) must be cleared so they can immediately request a new
-    // code. Keys here must mirror AppServiceProvider's `throttle:otp` limiter.
+    // OTP rate limit must be cleared so they can immediately request a new code.
     public function clearRateLimitFor(string $identifier, string $identifierType = 'email'): void
     {
-        RateLimiter::clear('otp:hour:'.$identifier);
-        RateLimiter::clear('otp:minute:'.$identifier);
         $this->attemptRepository->reset($identifier, $identifierType);
     }
 
     /**
      * @return array{result: OtpRequestResult, retry_after: int}|null
      */
-    private function checkBackoff(string $identifier, string $identifierType): ?array
+    private function checkRateLimit(string $identifier, string $identifierType): ?array
     {
         $attempt = $this->attemptRepository->findFor($identifier, $identifierType);
 
@@ -147,16 +141,23 @@ class OtpService
             return null;
         }
 
-        if ($this->isStale($attempt->last_request_at)) {
-            // Inactivity reset happens lazily on the next request (no
-            // background job needed): we just treat them as a fresh caller.
-            return null;
+        if ($attempt->last_request_at !== null) {
+            $cooldownEndsAt = $attempt->last_request_at->copy()->addSeconds(self::COOLDOWN_SECONDS);
+
+            if ($cooldownEndsAt->isFuture()) {
+                return [
+                    'result' => OtpRequestResult::RATE_LIMITED,
+                    'retry_after' => max(1, now()->diffInSeconds($cooldownEndsAt, false)),
+                ];
+            }
         }
 
-        if ($attempt->isInBackoff()) {
+        if (! $this->isHourlyWindowExpired($attempt) && $attempt->requests_this_hour >= self::HOURLY_CAP) {
+            $windowEndsAt = $attempt->hour_window_started_at->copy()->addHour();
+
             return [
                 'result' => OtpRequestResult::RATE_LIMITED,
-                'retry_after' => $attempt->retryAfterSeconds(),
+                'retry_after' => max(1, now()->diffInSeconds($windowEndsAt, false)),
             ];
         }
 
@@ -187,34 +188,18 @@ class OtpService
     {
         $attempt = $this->attemptRepository->findFor($identifier, $identifierType);
 
-        $currentCount = $attempt !== null && ! $this->isStale($attempt->last_request_at)
-            ? $attempt->unverified_count
-            : 0;
+        $windowExpired = $attempt === null || $this->isHourlyWindowExpired($attempt);
 
-        $newCount = $currentCount + 1;
+        $newWindowStart = $windowExpired ? now() : $attempt->hour_window_started_at;
+        $newCount = $windowExpired ? 1 : $attempt->requests_this_hour + 1;
 
-        $this->attemptRepository->recordRequest(
-            $identifier,
-            $identifierType,
-            $newCount,
-            now()->addSeconds($this->backoffFor($newCount)),
-        );
+        $this->attemptRepository->recordRequest($identifier, $identifierType, $newCount, $newWindowStart);
     }
 
-    private function backoffFor(int $count): int
+    private function isHourlyWindowExpired(OtpRequestAttempt $attempt): bool
     {
-        $index = min($count, count(self::BACKOFF_SECONDS) - 1);
-
-        return self::BACKOFF_SECONDS[$index];
-    }
-
-    private function isStale(?Carbon $lastRequestAt): bool
-    {
-        if ($lastRequestAt === null) {
-            return true;
-        }
-
-        return $lastRequestAt->lt(now()->subHours(self::STALE_INACTIVITY_HOURS));
+        return $attempt->hour_window_started_at === null
+            || $attempt->hour_window_started_at->copy()->addHour()->isPast();
     }
 
     private function generateCode(): string

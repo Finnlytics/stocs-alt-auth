@@ -5,12 +5,13 @@ use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\SecurityHeaders;
 use App\Http\Middleware\ValidateServiceApiKey;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Request;
-use Illuminate\Auth\AuthenticationException;
 use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
@@ -58,5 +59,20 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $exceptions->render(function (MethodNotAllowedHttpException $e, Request $request) {
             return response()->json(['message' => 'Method not allowed.'], 405);
+        });
+
+        // Every named limiter (auth, otp, service, ...) shares this one route
+        // middleware exception. Without a handler, it fell through to
+        // Laravel's default JSON renderer — which in debug mode dumps the
+        // full stack trace and never includes `retry_after`, so consumers
+        // (e.g. stocs-bids' OtpRateLimitedException) had no seconds to show.
+        $exceptions->render(function (ThrottleRequestsException $e, Request $request) {
+            $retryAfter = (int) ($e->getHeaders()['Retry-After'] ?? 60);
+
+            return response()->json([
+                'message' => 'Too many requests. Please try again later.',
+                'code' => 'route_throttled',
+                'retry_after' => $retryAfter,
+            ], 429)->header('Retry-After', (string) $retryAfter);
         });
     })->create();

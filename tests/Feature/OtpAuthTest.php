@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\Platform;
 use App\Models\OtpRequestAttempt;
 use App\Models\OtpToken;
 use App\Models\User;
@@ -50,7 +51,7 @@ class OtpAuthTest extends TestCase
         $this->assertDatabaseCount('otp_tokens', 1);
         $this->assertDatabaseHas('otp_request_attempts', [
             'identifier' => 'newuser@example.com',
-            'unverified_count' => 1,
+            'requests_this_hour' => 1,
         ]);
     }
 
@@ -66,6 +67,18 @@ class OtpAuthTest extends TestCase
         $response->assertJsonPath('code', 'account_exists');
 
         $this->assertDatabaseCount('otp_tokens', 0);
+    }
+
+    public function test_signup_request_refuses_when_account_already_exists_with_different_case(): void
+    {
+        $this->createBidsUser('already@example.com');
+
+        $response = $this->postJson('/api/v1/auth/otp/request/signup', [
+            'identifier' => 'Already@Example.com',
+        ]);
+
+        $response->assertStatus(409);
+        $response->assertJsonPath('code', 'account_exists');
     }
 
     // ──────────────────────────────────────────────
@@ -105,11 +118,54 @@ class OtpAuthTest extends TestCase
         $this->assertDatabaseCount('otp_request_attempts', 0);
     }
 
+    public function test_login_request_blocks_suspended_user_and_does_not_send_otp(): void
+    {
+        $user = $this->createBidsUser('suspended@example.com');
+        $user->platformAccess(Platform::BIDS)->update(['status' => 'suspended']);
+
+        $response = $this->postJson('/api/v1/auth/otp/request/login', [
+            'identifier' => 'suspended@example.com',
+        ]);
+
+        $response->assertStatus(403);
+        $response->assertJsonPath('status', 'suspended');
+
+        $this->assertDatabaseCount('otp_tokens', 0);
+    }
+
     // ──────────────────────────────────────────────
-    // Exponential backoff
+    // Route-level `throttle:auth` limiter (AppServiceProvider, wraps the whole
+    // /v1/auth group — 5/min per IP) — regression coverage for a bug where
+    // named-limiter routes had no registered exception handler: hitting one
+    // returned Laravel's raw debug response (full stack trace, no
+    // retry_after) instead of the app's usual clean rate-limit JSON. OTP's
+    // own per-identifier limiter (below) is a separate, additional layer.
     // ──────────────────────────────────────────────
 
-    public function test_second_signup_request_within_backoff_window_is_rate_limited(): void
+    public function test_route_level_auth_throttle_returns_clean_json_not_a_debug_trace(): void
+    {
+        $payload = ['email' => 'nobody@example.com', 'password' => 'wrong'];
+
+        for ($i = 0; $i < 5; $i++) {
+            $this->postJson('/api/v1/auth/login/b2b', $payload);
+        }
+
+        $response = $this->postJson('/api/v1/auth/login/b2b', $payload);
+
+        $response->assertStatus(429);
+        $response->assertJsonPath('code', 'route_throttled');
+        $response->assertJsonStructure(['message', 'code', 'retry_after']);
+        $this->assertGreaterThan(0, $response->json('retry_after'));
+        $response->assertHeader('Retry-After');
+        $this->assertArrayNotHasKey('exception', $response->json());
+    }
+
+    // ──────────────────────────────────────────────
+    // Rate limiting — single rule per identifier: a 30s cooldown between
+    // requests, plus a flat cap of 8 per rolling hour. Resets on verify.
+    // ──────────────────────────────────────────────
+
+    public function test_second_signup_request_within_cooldown_is_rate_limited(): void
     {
         $payload = ['identifier' => 'spam-target@example.com'];
 
@@ -118,14 +174,15 @@ class OtpAuthTest extends TestCase
         $response = $this->postJson('/api/v1/auth/otp/request/signup', $payload);
 
         $response->assertStatus(429);
-        $response->assertJsonPath('code', 'rate_limited');
+        $response->assertJsonPath('code', 'otp_backoff');
         $this->assertGreaterThan(0, $response->json('retry_after'));
+        $this->assertLessThanOrEqual(30, $response->json('retry_after'));
         $response->assertHeader('Retry-After');
 
         $this->assertDatabaseCount('otp_tokens', 1);
     }
 
-    public function test_login_request_applies_backoff_for_existing_user(): void
+    public function test_login_request_within_cooldown_is_rate_limited(): void
     {
         $this->createBidsUser('member-bk@example.com');
 
@@ -139,7 +196,7 @@ class OtpAuthTest extends TestCase
     {
         $payload = ['identifier' => 'unknown@example.com'];
 
-        // Even after many calls, an unknown email must not accumulate backoff
+        // Even after many calls, an unknown email must not accumulate rate-limit
         // state — otherwise the 429 boundary becomes an enumeration oracle.
         $this->postJson('/api/v1/auth/otp/request/login', $payload)->assertStatus(202);
         $this->postJson('/api/v1/auth/otp/request/login', $payload)->assertStatus(202);
@@ -147,7 +204,7 @@ class OtpAuthTest extends TestCase
         $this->assertDatabaseCount('otp_request_attempts', 0);
     }
 
-    public function test_successful_verify_resets_backoff_counter(): void
+    public function test_successful_verify_resets_the_rate_limit(): void
     {
         $code = '111222';
         OtpToken::create([
@@ -160,9 +217,9 @@ class OtpAuthTest extends TestCase
         OtpRequestAttempt::create([
             'identifier' => 'verifier@example.com',
             'identifier_type' => 'email',
-            'unverified_count' => 4,
+            'requests_this_hour' => 4,
             'last_request_at' => now(),
-            'next_allowed_at' => now()->addHour(),
+            'hour_window_started_at' => now(),
         ]);
 
         $this->postJson('/api/v1/auth/otp/verify', [
@@ -172,19 +229,20 @@ class OtpAuthTest extends TestCase
 
         $this->assertDatabaseHas('otp_request_attempts', [
             'identifier' => 'verifier@example.com',
-            'unverified_count' => 0,
-            'next_allowed_at' => null,
+            'requests_this_hour' => 0,
+            'hour_window_started_at' => null,
+            'last_request_at' => null,
         ]);
     }
 
-    public function test_backoff_resets_after_24h_of_inactivity(): void
+    public function test_hourly_window_resets_after_an_hour_of_inactivity(): void
     {
         OtpRequestAttempt::create([
             'identifier' => 'stale@example.com',
             'identifier_type' => 'email',
-            'unverified_count' => 5,
-            'last_request_at' => now()->subHours(25),
-            'next_allowed_at' => now()->subHours(24)->addHour(),
+            'requests_this_hour' => 8,
+            'last_request_at' => now()->subHours(2),
+            'hour_window_started_at' => now()->subHours(2),
         ]);
 
         $response = $this->postJson('/api/v1/auth/otp/request/signup', [
@@ -194,29 +252,47 @@ class OtpAuthTest extends TestCase
         $response->assertStatus(202);
         $this->assertDatabaseHas('otp_request_attempts', [
             'identifier' => 'stale@example.com',
-            'unverified_count' => 1,
+            'requests_this_hour' => 1,
         ]);
     }
 
-    public function test_backoff_ramps_exponentially(): void
+    public function test_cooldown_blocks_an_immediate_repeat_but_allows_it_once_elapsed(): void
     {
-        $payload = ['identifier' => 'ramp@example.com'];
+        $payload = ['identifier' => 'cooldown@example.com'];
 
         $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
+        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(429);
 
-        $attempt = OtpRequestAttempt::firstWhere('identifier', 'ramp@example.com');
-        $this->assertSame(1, $attempt->unverified_count);
-        // After 1st request, 2nd is delayed by 30s.
-        $this->assertEqualsWithDelta(30, now()->diffInSeconds($attempt->next_allowed_at, false), 2);
+        // Jump the cooldown so the next request is allowed again.
+        $attempt = OtpRequestAttempt::firstWhere('identifier', 'cooldown@example.com');
+        $attempt->update(['last_request_at' => now()->subSeconds(31)]);
 
-        // Jump past the first window so the next request is allowed, then bump.
-        $attempt->update(['next_allowed_at' => now()->subSecond()]);
         $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
 
         $attempt->refresh();
-        $this->assertSame(2, $attempt->unverified_count);
-        // After 2nd request, 3rd is delayed by 2m.
-        $this->assertEqualsWithDelta(120, now()->diffInSeconds($attempt->next_allowed_at, false), 2);
+        $this->assertSame(2, $attempt->requests_this_hour);
+    }
+
+    public function test_hourly_cap_blocks_the_ninth_request_within_the_hour(): void
+    {
+        // Seed 8 requests already made in the current window (at the cap),
+        // with the cooldown already elapsed so only the hourly cap is at play.
+        OtpRequestAttempt::create([
+            'identifier' => 'capped@example.com',
+            'identifier_type' => 'email',
+            'requests_this_hour' => 8,
+            'last_request_at' => now()->subSeconds(31),
+            'hour_window_started_at' => now()->subMinutes(10),
+        ]);
+
+        $response = $this->postJson('/api/v1/auth/otp/request/signup', [
+            'identifier' => 'capped@example.com',
+        ]);
+
+        $response->assertStatus(429);
+        $response->assertJsonPath('code', 'otp_backoff');
+        // Window started 10 minutes ago, so ~50 minutes remain until it expires.
+        $this->assertEqualsWithDelta(50 * 60, $response->json('retry_after'), 5);
     }
 
     // ──────────────────────────────────────────────

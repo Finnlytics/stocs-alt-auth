@@ -18,6 +18,7 @@ class ReinstateUserRequest extends FormRequest
     {
         return [
             'platform' => ['sometimes', Rule::in(array_column(Platform::cases(), 'value'))],
+            'reason' => ['sometimes', 'nullable', 'string', 'max:255'],
         ];
     }
 }

@@ -17,26 +17,26 @@ class OtpRequestAttemptRepository
     public function recordRequest(
         string $identifier,
         string $identifierType,
-        int $unverifiedCount,
-        Carbon $nextAllowedAt,
+        int $requestsThisHour,
+        Carbon $hourWindowStartedAt,
     ): OtpRequestAttempt {
         $attempt = $this->findFor($identifier, $identifierType);
+
+        $data = [
+            'requests_this_hour' => $requestsThisHour,
+            'last_request_at' => now(),
+            'hour_window_started_at' => $hourWindowStartedAt,
+        ];
 
         if ($attempt === null) {
             return OtpRequestAttempt::create([
                 'identifier' => $identifier,
                 'identifier_type' => $identifierType,
-                'unverified_count' => $unverifiedCount,
-                'last_request_at' => now(),
-                'next_allowed_at' => $nextAllowedAt,
+                ...$data,
             ]);
         }
 
-        $attempt->update([
-            'unverified_count' => $unverifiedCount,
-            'last_request_at' => now(),
-            'next_allowed_at' => $nextAllowedAt,
-        ]);
+        $attempt->update($data);
 
         return $attempt;
     }
@@ -46,8 +46,9 @@ class OtpRequestAttemptRepository
         $attempt = $this->findFor($identifier, $identifierType);
 
         $attempt?->update([
-            'unverified_count' => 0,
-            'next_allowed_at' => null,
+            'requests_this_hour' => 0,
+            'hour_window_started_at' => null,
+            'last_request_at' => null,
         ]);
     }
 }

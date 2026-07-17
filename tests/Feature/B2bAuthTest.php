@@ -78,6 +78,29 @@ class B2bAuthTest extends TestCase
         $response->assertJsonValidationErrors('email');
     }
 
+    public function test_b2b_register_rejects_duplicate_email_differing_only_by_case(): void
+    {
+        User::create([
+            'uuid' => Str::uuid()->toString(),
+            'name' => 'Existing',
+            'email' => 'Test@Example.com',
+            'password' => 'Xk9$mQ2vR7nP',
+        ]);
+
+        $this->assertDatabaseHas('users', ['email' => 'test@example.com']);
+
+        $response = $this->postJson('/api/v1/auth/register/b2b', [
+            'name' => 'Test User',
+            'email' => 'TEST@EXAMPLE.COM',
+            'password' => 'Xk9$mQ2vR7nP',
+            'password_confirmation' => 'Xk9$mQ2vR7nP',
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors('email');
+        $this->assertDatabaseCount('users', 1);
+    }
+
     public function test_b2b_login_returns_token(): void
     {
         $user = User::create([
@@ -102,6 +125,31 @@ class B2bAuthTest extends TestCase
 
         $response->assertOk();
         $response->assertJsonStructure(['data', 'token', 'message']);
+    }
+
+    public function test_b2b_login_succeeds_with_differently_cased_email(): void
+    {
+        $user = User::create([
+            'uuid' => Str::uuid()->toString(),
+            'name' => 'Test User',
+            'email' => 'test@example.com',
+            'password' => 'Xk9$mQ2vR7nP',
+        ]);
+
+        UserPlatform::create([
+            'user_id' => $user->id,
+            'platform' => 'b2b',
+            'role' => 'wholesaler',
+            'status' => 'approved',
+            'approved_at' => now(),
+        ]);
+
+        $response = $this->postJson('/api/v1/auth/login/b2b', [
+            'email' => 'Test@Example.COM',
+            'password' => 'Xk9$mQ2vR7nP',
+        ]);
+
+        $response->assertOk();
     }
 
     public function test_b2b_login_fails_with_wrong_password(): void

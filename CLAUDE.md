@@ -106,7 +106,7 @@ Users have access to platforms via the `user_platforms` pivot table:
 ### OTP Auth (Bids)
 - 6-digit code, hashed, 10-minute expiry
 - Max 3 verification attempts per code
-- Max 5 OTP requests per identifier per hour
+- Rate limit per identifier: 30s cooldown between requests, max 8 per rolling hour. One rule (`OtpService`, `otp_request_attempts` table) — resets on a successful verify. See `OtpService::checkRateLimit()`.
 - New users created on first successful OTP verification
 
 ## Operator Admins

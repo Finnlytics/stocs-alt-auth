@@ -6,11 +6,13 @@ use App\Enums\Platform;
 use App\Enums\PlatformRole;
 use App\Enums\PlatformStatus;
 use Database\Factories\UserFactory;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
@@ -47,6 +49,17 @@ class User extends Authenticatable
             'gdpr_consent_at' => 'datetime',
             'gdpr_data_deleted_at' => 'datetime',
         ];
+    }
+
+    // Every account is identified by email, so a single normalized form must
+    // be enforced at the model boundary — otherwise "Foo@x.com" and "foo@x.com"
+    // pass the `unique:users,email` check as distinct values and split one
+    // person across two accounts (OTP/login lookups then silently miss too).
+    protected function email(): Attribute
+    {
+        return Attribute::make(
+            set: fn (string $value) => Str::lower(trim($value)),
+        );
     }
 
     public function platforms(): HasMany
