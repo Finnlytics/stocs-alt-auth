@@ -16,7 +16,6 @@ These apply to every change in this project. See `.claude/rules/` for full detai
 ## Quick Commands
 
 ```bash
-cd src
 composer install
 php artisan migrate:fresh --seed
 php artisan serve
@@ -39,19 +38,19 @@ php artisan test
 
 | Area | Files |
 |------|-------|
-| Models | `src/app/Models/` — User, UserPlatform, OtpToken, ServiceApiKey, AuthAuditLog |
-| Services | `src/app/Services/` — AuthService, OtpService, PasswordResetService, PlatformAccessService, AuditService |
-| Repositories | `src/app/Repositories/` |
-| Auth Controllers | `src/app/Http/Controllers/Auth/` |
-| Admin Controllers | `src/app/Http/Controllers/Admin/` |
-| Service Controllers | `src/app/Http/Controllers/Service/` |
-| Middleware | `src/app/Http/Middleware/` |
-| Mail | `src/app/Mail/` |
-| Enums | `src/app/Enums/` — Platform, PlatformRole, PlatformStatus |
+| Models | `app/Models/` — User, UserPlatform, OtpToken, ServiceApiKey, AuthAuditLog |
+| Services | `app/Services/` — AuthService, OtpService, PasswordResetService, PlatformAccessService, AuditService |
+| Repositories | `app/Repositories/` |
+| Auth Controllers | `app/Http/Controllers/Auth/` |
+| Admin Controllers | `app/Http/Controllers/Admin/` |
+| Service Controllers | `app/Http/Controllers/Service/` |
+| Middleware | `app/Http/Middleware/` |
+| Mail | `app/Mail/` |
+| Enums | `app/Enums/` — Platform, PlatformRole, PlatformStatus |
 
 ## API Endpoints
 
-Full OpenAPI 3.1 spec at [src/docs/openapi.yaml](src/docs/openapi.yaml) — also served at `GET /api/docs/openapi.yaml` (no auth). Import into Postman, Insomnia, or use for client generation (openapi-generator, orval, etc.). Update the spec in the same change as any endpoint contract change.
+Full OpenAPI 3.1 spec at [docs/openapi.yaml](docs/openapi.yaml) — also served at `GET /api/docs/openapi.yaml` (no auth). Import into Postman, Insomnia, or use for client generation (openapi-generator, orval, etc.). Update the spec in the same change as any endpoint contract change.
 
 ### Public Auth (`/api/v1/auth/`)
 - `POST /register/b2b` �� B2B password registration
@@ -113,7 +112,7 @@ Users have access to platforms via the `user_platforms` pivot table:
 
 Operator admin accounts (super-admins with approved access on every platform) are seeded by `AdminUsersSeeder` from `config/admins.php`. Each config entry pulls its email, password, and name from numbered env vars; entries with a missing email or password are silently skipped, so unused slots stay inert in production.
 
-**Config**: [config/admins.php](src/config/admins.php) — one array entry per admin slot.
+**Config**: [config/admins.php](config/admins.php) — one array entry per admin slot.
 
 **Env**:
 
@@ -151,7 +150,7 @@ This runs `2026_04_17_000001_add_auth_user_uuid_to_users_table.php`.
 ### Step 2: Migrate users into stocs-auth
 
 ```bash
-cd stocs-auth/src
+cd stocs-auth
 
 # Preview what will be migrated (no changes made)
 php artisan auth:migrate-b2b-users --dry-run
@@ -186,7 +185,7 @@ Both services must be running for B2B login/register/password reset to work:
 
 ```bash
 # Terminal 1: Start stocs-auth
-cd stocs-auth/src && php artisan serve --port=8098
+cd stocs-auth && php artisan serve --port=8098
 
 # Terminal 2: Start stocs-b2b (with auth URL pointing to stocs-auth)
 cd stocs-b2b/src && STOCS_AUTH_URL=http://localhost:8098 php artisan serve
@@ -194,7 +193,7 @@ cd stocs-b2b/src && STOCS_AUTH_URL=http://localhost:8098 php artisan serve
 
 ## Environment
 
-- Local: SQLite at `src/database/database.sqlite`
+- Local: SQLite at `database/database.sqlite`
 - Production: MySQL 8.0
 - Testing: In-memory SQLite
 

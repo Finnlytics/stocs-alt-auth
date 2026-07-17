@@ -6,6 +6,7 @@
 .phpactor.json
 .phpunit.result.cache
 /.cursor/
+/.fleet
 /.idea
 /.nova
 /.phpunit.cache
@@ -19,9 +20,11 @@
 /storage/*.key
 /storage/otp-codes.txt
 /storage/pail
+/stocs-core
 /vendor
 _ide_helper.php
+DIGITAL_OCEAN_ENV_VARS.md
 Homestead.json
 Homestead.yaml
+live.env
 Thumbs.db
-
