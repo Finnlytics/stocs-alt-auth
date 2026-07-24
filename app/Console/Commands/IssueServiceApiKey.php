@@ -12,7 +12,7 @@ class IssueServiceApiKey extends Command
 {
     protected $signature = 'auth:issue-service-key
                             {name : Human-readable name for the key (e.g. "b2b-backend")}
-                            {platform : Platform this key is scoped to (b2b|bids)}
+                            {platform : Platform this key is scoped to (b2b|bids|buy)}
                             {--expires-in-days= : Optional expiry in days}';
 
     protected $description = 'Issue a service API key for backend-to-backend calls';
@@ -22,7 +22,7 @@ class IssueServiceApiKey extends Command
         $platform = Platform::tryFrom($this->argument('platform'));
 
         if (! $platform) {
-            $this->error('Invalid platform. Must be one of: b2b, bids');
+            $this->error('Invalid platform. Must be one of: b2b, bids, buy');
 
             return self::FAILURE;
         }

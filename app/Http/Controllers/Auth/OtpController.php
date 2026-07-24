@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Enums\LoginResult;
 use App\Enums\OtpRequestResult;
+use App\Enums\Platform;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Auth\OtpRequestRequest;
 use App\Http\Requests\Auth\OtpVerifyRequest;
@@ -62,7 +63,10 @@ class OtpController extends Controller
 
     public function verify(OtpVerifyRequest $request): JsonResponse
     {
-        $result = $this->authService->completeBidsRegistration(
+        $platform = Platform::from($request->validated('platform', Platform::BIDS->value));
+
+        $result = $this->authService->completeConsumerOtpRegistration(
+            $platform,
             $request->validated('identifier'),
             $request->validated('code'),
             $request,

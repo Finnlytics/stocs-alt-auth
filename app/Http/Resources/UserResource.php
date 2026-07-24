@@ -15,6 +15,7 @@ class UserResource extends JsonResource
             'email' => $this->email,
             'phone' => $this->phone,
             'email_verified_at' => $this->email_verified_at,
+            'signup_platform' => $this->signup_platform,
             'is_super_admin' => $this->is_super_admin,
             'marketing_preferences' => $this->marketing_preferences,
             'platforms' => $this->whenLoaded('platforms', function () {

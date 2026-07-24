@@ -27,30 +27,46 @@ class PlatformAccessService
 
     public function grantBidsAccess(User $user, string $role = 'consumer'): UserPlatform
     {
-        // BUSINESS RULE: Bids access is auto-approved, no screening required
+        return $this->grantConsumerAccess($user, Platform::BIDS, $role);
+    }
+
+    public function grantBuyAccess(User $user, string $role = 'consumer'): UserPlatform
+    {
+        return $this->grantConsumerAccess($user, Platform::BUY, $role);
+    }
+
+    /**
+     * Grant auto-approved access to a consumer platform (Bids, Buy). Consumer
+     * platforms authenticate via OTP and need no screening. B2B is the
+     * exception (admin approval) and has its own pending-status grant.
+     */
+    public function grantConsumerAccess(User $user, Platform $platform, string $role = 'consumer'): UserPlatform
+    {
+        // BUSINESS RULE: consumer platform access is auto-approved, no screening required
         return $this->platformRepository->grantAccess(
             $user,
-            Platform::BIDS->value,
+            $platform->value,
             $role,
             PlatformStatus::APPROVED->value
         );
     }
 
+    /**
+     * Admins are shared across every platform — one admin account works on B2B,
+     * Bids and Buy. Granting admin approves the account on all of them so a
+     * consuming app's admin panel (which validates the token/role against this
+     * service) recognises the admin regardless of which site they log in on.
+     */
     public function grantAdminAccess(User $user): void
     {
-        $this->platformRepository->grantAccess(
-            $user,
-            Platform::B2B->value,
-            PlatformRole::ADMIN->value,
-            PlatformStatus::APPROVED->value
-        );
-
-        $this->platformRepository->grantAccess(
-            $user,
-            Platform::BIDS->value,
-            PlatformRole::ADMIN->value,
-            PlatformStatus::APPROVED->value
-        );
+        foreach ([Platform::B2B, Platform::BIDS, Platform::BUY] as $platform) {
+            $this->platformRepository->grantAccess(
+                $user,
+                $platform->value,
+                PlatformRole::ADMIN->value,
+                PlatformStatus::APPROVED->value
+            );
+        }
     }
 
     public function canAccessPlatform(User $user, Platform $platform): bool

@@ -6,4 +6,5 @@ enum Platform: string
 {
     case B2B = 'b2b';
     case BIDS = 'bids';
+    case BUY = 'buy';
 }

@@ -26,6 +26,7 @@ class User extends Authenticatable
         'name',
         'email',
         'phone',
+        'signup_platform',
         'password',
         'marketing_preferences',
         'gdpr_consent_at',

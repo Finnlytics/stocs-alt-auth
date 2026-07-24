@@ -30,6 +30,7 @@ class AuthService
             'email' => $data['email'],
             'password' => $data['password'],
             'email_verified_at' => now(),
+            'signup_platform' => Platform::B2B->value,
         ]);
 
         // BUSINESS RULE: B2B signup creates pending B2B access + auto-approved Bids access
@@ -56,6 +57,18 @@ class AuthService
 
     public function completeBidsRegistration(string $identifier, string $code, ?Request $request = null, ?string $name = null): array
     {
+        return $this->completeConsumerOtpRegistration(Platform::BIDS, $identifier, $code, $request, $name);
+    }
+
+    /**
+     * Verify an OTP and log the consumer in on a consumer platform (Bids, Buy).
+     * On first successful verify the user is created and their origin site is
+     * stamped on `users.signup_platform`. The platform drives which access is
+     * granted, the token ability (`platform:{platform}`), and the audit entry —
+     * so the same OTP flow serves every consumer site without duplication.
+     */
+    public function completeConsumerOtpRegistration(Platform $platform, string $identifier, string $code, ?Request $request = null, ?string $name = null): array
+    {
         $result = $this->otpService->verifyOtp($identifier, $code);
 
         if (! $result['verified']) {
@@ -78,30 +91,32 @@ class AuthService
                     'name' => $providedName !== '' ? $providedName : explode('@', $identifier)[0],
                     'email' => $identifier,
                     'email_verified_at' => now(),
+                    // Capture which site the user first signed up on.
+                    'signup_platform' => $platform->value,
                 ]);
                 $isNewUser = true;
             }
         }
 
-        $bidsAccess = $user->platformAccess(Platform::BIDS);
+        $access = $user->platformAccess($platform);
 
         // BUSINESS RULE: A verified OTP must NOT lift a suspension or rejection.
         // Without this gate, suspended users could re-approve themselves by going
         // through the OTP flow (the previous `hasPlatformAccess` check returned
-        // false for suspended records and `grantBidsAccess` would updateOrCreate
-        // the row back to `approved`).
+        // false for suspended records and the grant would updateOrCreate the row
+        // back to `approved`).
         $blockedResult = match (true) {
-            $bidsAccess?->isSuspended() => LoginResult::SUSPENDED,
-            $bidsAccess && ! $bidsAccess->isApproved() && ! $bidsAccess->isPending() => LoginResult::REJECTED,
+            $access?->isSuspended() => LoginResult::SUSPENDED,
+            $access && ! $access->isApproved() && ! $access->isPending() => LoginResult::REJECTED,
             default => null,
         };
 
         if ($blockedResult) {
             $this->auditService->log(
                 'login_blocked',
-                'Bids OTP login blocked — '.$blockedResult->value,
+                ucfirst($platform->value).' OTP login blocked — '.$blockedResult->value,
                 $user->id,
-                Platform::BIDS->value,
+                $platform->value,
                 ['reason' => $blockedResult->value],
                 $request
             );
@@ -109,18 +124,20 @@ class AuthService
             return ['result' => $blockedResult];
         }
 
-        if (! $bidsAccess) {
-            $this->platformAccessService->grantBidsAccess($user);
+        if (! $access) {
+            $this->platformAccessService->grantConsumerAccess($user, $platform);
             $isNewUser = true;
         }
 
-        $token = $user->createToken('bids-web', ['platform:bids'])->plainTextToken;
+        $token = $user->createToken($platform->value.'-web', ['platform:'.$platform->value])->plainTextToken;
 
         $this->auditService->log(
             $isNewUser ? 'register' : 'login',
-            $isNewUser ? 'User registered via Bids OTP' : 'User logged in via Bids OTP',
+            $isNewUser
+                ? 'User registered via '.ucfirst($platform->value).' OTP'
+                : 'User logged in via '.ucfirst($platform->value).' OTP',
             $user->id,
-            Platform::BIDS->value,
+            $platform->value,
             request: $request
         );
 
@@ -208,7 +225,7 @@ class AuthService
 
         $this->platformAccessService->grantAdminAccess($user);
 
-        $token = $user->createToken('admin', ['platform:b2b', 'platform:bids'])->plainTextToken;
+        $token = $user->createToken('admin', ['platform:b2b', 'platform:bids', 'platform:buy'])->plainTextToken;
 
         return [
             'user' => $user->fresh('platforms'),
