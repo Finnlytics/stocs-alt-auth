@@ -1,6 +1,16 @@
 # CLAUDE.md
 
-Stocs Auth is a headless API authentication service. It is the single source of truth for user identity across the STOCS platform (B2B and Bids). No admin UI — B2B and Bids admin panels call these API endpoints.
+Stocs Auth is a headless API authentication service, intended as the single source of truth for user identity across the STOCS platform. No admin UI — consuming apps' admin panels call these API endpoints.
+
+**Current scope:** stocs-bids is the only consumer today. stocs-b2b still has its own authentication and does **not** authenticate through this service; migrating it is a future intention, and the plan is in [B2B Migration Plan](#b2b-migration-plan) below. Treat the B2B endpoints and the `b2b` platform records as built-and-waiting rather than in use, and read blast-radius statements accordingly: an auth outage currently takes down consumer login on Bids, not B2B.
+
+## Documentation index
+
+| Doc | Covers |
+|---|---|
+| [.claude/docs/deployment.md](.claude/docs/deployment.md) | App Platform spec, env template + secret split, why the queue worker is load-bearing, the `doadmin` privilege question, what `APP_ENV` actually gates |
+| [.claude/docs/testing.md](.claude/docs/testing.md) | Suite setup and the environment traps that make tests lie |
+| [docs/openapi.yaml](docs/openapi.yaml) | Full OpenAPI 3.1 spec, also served at `GET /api/docs/openapi.yaml` |
 
 ## Hard Rules (NON-NEGOTIABLE)
 
@@ -14,6 +24,9 @@ These apply to every change in this project. See `.claude/rules/` for full detai
 6. **Admin approval must be enforced on login.** B2B login must check that the user's `user_platforms.status === 'approved'` for the B2B platform before issuing a token. Pending/rejected/suspended users get rejected with a clear status code.
 
 ## Quick Commands
+
+The Laravel app lives at the **repo root** — there is no `src/` subdirectory here (unlike stocs-bids).
+Run everything from `stocs-auth/`.
 
 ```bash
 composer install
@@ -38,7 +51,7 @@ php artisan test
 
 | Area | Files |
 |------|-------|
-| Models | `app/Models/` — User, UserPlatform, OtpToken, ServiceApiKey, AuthAuditLog |
+| Models | `app/Models/` — User, UserPlatform, OtpToken, PasswordResetToken, OtpRequestAttempt, ServiceApiKey, AuthAuditLog |
 | Services | `app/Services/` — AuthService, OtpService, PasswordResetService, PlatformAccessService, AuditService |
 | Repositories | `app/Repositories/` |
 | Auth Controllers | `app/Http/Controllers/Auth/` |
@@ -46,7 +59,7 @@ php artisan test
 | Service Controllers | `app/Http/Controllers/Service/` |
 | Middleware | `app/Http/Middleware/` |
 | Mail | `app/Mail/` |
-| Enums | `app/Enums/` — Platform, PlatformRole, PlatformStatus |
+| Enums | `app/Enums/` — Platform, PlatformRole, PlatformStatus, LoginResult, OtpRequestResult |
 
 ## API Endpoints
 
@@ -55,7 +68,8 @@ Full OpenAPI 3.1 spec at [docs/openapi.yaml](docs/openapi.yaml) — also served 
 ### Public Auth (`/api/v1/auth/`)
 - `POST /register/b2b` �� B2B password registration
 - `POST /login/b2b` — B2B password login
-- `POST /otp/request` — Request OTP (Bids)
+- `POST /otp/request/login` — Request OTP for an existing account (Bids). Never creates a user, and doesn't generate a code or email for an unknown address.
+- `POST /otp/request/signup` — Request OTP with explicit sign-up intent (Bids)
 - `POST /otp/verify` — Verify OTP, returns token
 - `POST /password/forgot` — Request password reset
 - `POST /password/reset` — Reset with token
@@ -81,10 +95,14 @@ Full OpenAPI 3.1 spec at [docs/openapi.yaml](docs/openapi.yaml) — also served 
 
 ### Service-to-Service (`/api/v1/service/` + X-Service-Key header)
 - `POST /validate-token` — Validate a Sanctum token
+- `GET /users` — List/filter users (backs the Bids admin "All users" directory)
 - `GET /users/{uuid}` — Lookup user by UUID
 - `GET /users/by-email/{email}` — Lookup by email
 - `POST /users/{uuid}/suspend` — Suspend a user's platform access (body: `platform` default `bids`, optional `reason`). Sets `user_platforms.status = 'suspended'` and revokes the user's tokens — OTP login then blocks re-entry until an admin lifts it. Used by Bids to suspend an auction winner who didn't pay. Shares `PlatformAccessService::suspend()` with the admin suspend endpoint.
 - `POST /users/{uuid}/reinstate` — Lift a suspension (body: `platform` default `bids`). Returns `user_platforms.status` to `approved`. Only acts on a currently-suspended account (422 otherwise). Used by the Bids admin "All users" page.
+- `POST /test-users/mint` — **Dev only.** Mints N Bids-scoped tokens for load testing (`bids:simulate-http`). `TestUsersController` refuses to run when `APP_ENV=production`.
+
+Unauthenticated utility routes: `GET /api/health` and `GET /api/docs/openapi.yaml`.
 
 Issue service keys via: `php artisan auth:issue-service-key <name> <b2b|bids>`. Keys are returned once in `{prefix}.{secret}` form; only the hashed secret is stored. Consumers send the full key in the `X-Service-Key` header.
 

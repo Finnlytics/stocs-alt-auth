@@ -1,0 +1,114 @@
+# App Platform spec: stocs-auth STAGING.
+#
+# Read .do/app.yaml first: the full-spec-replace mechanics, the __IMAGE_TAG__
+# substitution, the doadmin question and the reasoning behind each component are all
+# documented there. This file records only what differs.
+#
+# WHAT DIFFERS FROM PRODUCTION
+#
+#   name        stocs-auth, matching the live app. Not renamed to add a -staging suffix:
+#               App Platform derives the generated hostname from the app name, and
+#               stocs-bids' staging template hardcodes this app's hostname in
+#               STOCS_AUTH_URL, so a rename is a coordinated change across both repos.
+#   domains     none. Runs on its generated hostname, matching live.
+#   db_name     stocs_auth, see below.
+#   env source  .env.staging.example
+#
+# ---------------------------------------------------------------------------
+# TWO DELIBERATE CHANGES TO THE RUNNING ENVIRONMENT
+#
+# Applying this is not a no-op:
+#
+#   1. APP_ENV becomes staging, where the app runs production today. That is not
+#      cosmetic: MintTestUsersRequest::authorize() returns `! app()->isProduction()`, so
+#      POST /api/v1/service/test-users/mint returns 403 right now, and that endpoint is
+#      what bids' `bids:simulate-http` harness uses to mint tokens. The HTTP load test
+#      therefore cannot run against staging auth as things stand, and this unblocks it.
+#      Nothing else in auth branches on the environment name.
+#   2. DB_HOST moves from the hardcoded public cluster endpoint to a ${stocs-main.*}
+#      binding, which also keeps the hostname out of the repo.
+#
+# This environment is also the right place to prove the switch from doadmin to the
+# dedicated auth_2026_07 user before production depends on it. Doing it here first means
+# discovering a privilege gap on a test service rather than on the login path the consumer
+# site depends on.
+# See .do/app.yaml for why that switch is worth making.
+
+name: stocs-auth
+region: lon
+
+# PENDING RENAME: stocs_auth, not stocs_auth_staging. The name predates the environment
+# split. Renaming means resetting staging, and until then this must match reality or
+# staging points at a database that does not exist.
+#
+# The cluster user is shared across environments, because DigitalOcean managed MySQL
+# users have cluster-wide access, so environment separation rests on db_name alone.
+databases:
+  - name: stocs-main
+    cluster_name: stocs-main
+    engine: MYSQL
+    version: "8"
+    db_name: stocs_auth
+    db_user: doadmin
+    production: true
+
+envs:
+  - key: DB_CONNECTION
+    scope: RUN_TIME
+    value: mysql
+  - key: DB_HOST
+    scope: RUN_TIME
+    value: ${stocs-main.HOSTNAME}
+  - key: DB_PORT
+    scope: RUN_TIME
+    value: ${stocs-main.PORT}
+  - key: DB_DATABASE
+    scope: RUN_TIME
+    value: ${stocs-main.DATABASE}
+  - key: DB_USERNAME
+    scope: RUN_TIME
+    value: ${stocs-main.USERNAME}
+  - key: DB_PASSWORD
+    scope: RUN_TIME
+    value: ${stocs-main.PASSWORD}
+
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: php artisan migrate --force
+    image:
+      registry_type: DOCR
+      repository: stocs-auth
+      tag: __IMAGE_TAG__
+
+services:
+  - name: api
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    image:
+      registry_type: DOCR
+      repository: stocs-auth
+      tag: __IMAGE_TAG__
+    health_check:
+      http_path: /up
+      initial_delay_seconds: 20
+      period_seconds: 10
+
+workers:
+  # Required here as much as in production: OTP mail is queued, so without this worker
+  # no login code is delivered and staging looks broken in a way that has nothing to do
+  # with whatever you were actually testing.
+  - name: queue
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    image:
+      registry_type: DOCR
+      repository: stocs-auth
+      tag: __IMAGE_TAG__
+    run_command: php artisan queue:work --tries=3 --backoff=60 --timeout=120
+
+alerts:
+  - rule: DEPLOYMENT_FAILED

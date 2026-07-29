@@ -4,13 +4,48 @@ name: Build & Deploy (DOCR → App Platform)
 # and triggers the App Platform deployment that pulls it. No buildpack / GitHub
 # source involved — App Platform deploys from the image we push here.
 #
+# The validate job gates the deploy: nothing ships unless the suite, formatting,
+# dependency audit and a boot check all pass. Kept deliberately in step with
+# stocs-bids' workflow, since the two repos drifting apart is how auth ended up
+# with no CI at all while bids had a gate.
+#
+# Note: the Laravel app is at the repo root here, unlike stocs-bids which nests
+# it under src/. There are also no Node/Vite steps: the only view using @vite is
+# the unrouted welcome.blade.php, so no asset manifest is needed for tests.
+#
 # Required repo secret:
 #   DIGITALOCEAN_ACCESS_TOKEN — a DO API token with registry + app write scope.
+
+# DEPLOYMENT TO DIGITALOCEAN IS CURRENTLY OFF.
+#
+# This workflow still validates and still builds and pushes the image to DOCR, which is
+# what production needs in order to have something to pull. What it no longer does on a
+# push to main is trigger a deployment of the existing app.
+#
+# Why: that app is becoming STAGING, and its full configuration is not yet reconciled
+# (the plaintext secrets are still only on one developer's machine). Deploying into it
+# from an incomplete picture risks replacing working config with a partial set, and this
+# is the login path for the consumer site: OTP is the only way consumers authenticate, so
+# breaking it locks everyone out of bids. (stocs-b2b does not authenticate through this
+# service today; unifying them is a future intention.) Nothing is public yet, so the
+# staging-then-production flow does not need to hold meanwhile.
+#
+# To deploy to the existing app anyway, run the workflow manually and tick
+# deploy_to_staging. Production is created and deployed from the specs in .do/ for now,
+# outside this workflow.
+#
+# Temporary. It goes away when the workflows are split into deploy-staging.yml (staging
+# branch) and deploy-prod.yml (v* tag).
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_to_staging:
+        description: 'Also trigger a deployment of the existing (staging) DO app'
+        type: boolean
+        default: false
 
 env:
   REGISTRY: registry.digitalocean.com/stocs-registry
@@ -18,13 +53,97 @@ env:
   APP_ID: c7700101-e062-4d1d-b974-f8e36a449906
 
 jobs:
-  deploy:
+  validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          # pdo_sqlite rather than pdo_mysql: the suite runs on in-memory SQLite,
+          # so no database service is needed. Production uses MySQL.
+          extensions: bcmath, exif, intl, mbstring, pdo_sqlite, pcntl, zip
+          coverage: none
+
+      # The .env.*.example templates are committed and hold the non-secret half of each
+      # environment's config. Same guard as stocs-bids, deliberately kept in step.
+      - name: Check environment templates
+        run: |
+          status=0
+          for f in .env.production.example .env.staging.example; do
+            [ -f "$f" ] || continue
+
+            if grep -nE '^[A-Z0-9_]*(SECRET|PASSWORD|API_KEY|ACCESS_TOKEN|PRIVATE_KEY)[A-Z0-9_]*=.+' "$f"; then
+              echo "::error file=$f::secret-shaped key with a value found in a committed template"
+              status=1
+            fi
+
+            if grep -nE '^APP_KEY=.+' "$f"; then
+              echo "::error file=$f::generated credential found in a committed template"
+              status=1
+            fi
+
+            # Assignment lines only, so this does not flag the comments describing it.
+            if grep -nE '^[A-Z0-9_]+=.*__SET_ME__' "$f"; then
+              echo "::warning file=$f::unresolved __SET_ME__ placeholders, fill before this template feeds a deploy"
+            fi
+          done
+
+          if [ -f .env.production.example ] && [ -f .env.staging.example ]; then
+            if ! diff <(grep -oE '^[A-Z0-9_]+=' .env.production.example | sort) \
+                      <(grep -oE '^[A-Z0-9_]+=' .env.staging.example | sort); then
+              echo "::error::.env.production.example and .env.staging.example define different keys"
+              status=1
+            fi
+          fi
+
+          # Every templated key must be one the app actually reads. A key the app ignores
+          # is worse than a missing one: it looks configured while the code silently uses
+          # its default. Commented-out entries in .env.example count as documented.
+          grep -oE '^#? ?[A-Z0-9_]+=' .env.example | tr -d '#= ' | sort -u > /tmp/known_keys
+          for f in .env.production.example .env.staging.example; do
+            [ -f "$f" ] || continue
+            unknown=$(comm -23 <(grep -oE '^[A-Z0-9_]+=' "$f" | tr -d '=' | sort -u) /tmp/known_keys)
+            if [ -n "$unknown" ]; then
+              echo "::error file=$f::keys not present in .env.example, so nothing reads them: $(echo $unknown | tr '\n' ' ')"
+              status=1
+            fi
+          done
+
+          exit $status
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Validate and audit PHP dependencies
+        run: |
+          composer validate --strict
+          composer audit --locked --no-dev
+
+      # phpunit.xml supplies its own APP_KEY, so the suite alone needs no .env.
+      # The boot check does: booting without the config the app really uses would
+      # not prove much.
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Run checks
+        run: |
+          vendor/bin/pint --test
+          php artisan route:list --json > /dev/null
+          php artisan test
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install doctl
-        uses: digitalocean/action-doctl@v2
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
@@ -32,10 +151,10 @@ jobs:
         run: doctl registry login --expiry-seconds 1200
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build & push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64
@@ -46,5 +165,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Opt-in only, so a push to main builds and pushes the image without touching the
+      # app that is becoming staging. `inputs` is null on a push event, so this is false
+      # unless the workflow is dispatched manually with the box ticked.
       - name: Deploy on App Platform
+        if: inputs.deploy_to_staging
         run: doctl apps create-deployment "$APP_ID" --wait
+
+      - name: Note that no deployment was triggered
+        if: ${{ !inputs.deploy_to_staging }}
+        run: |
+          echo "::notice::Image pushed to DOCR, no App Platform deployment triggered."
+          echo "Tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }} and :latest"
+          echo "Deploying to the existing (staging) app is opt-in while its config is"
+          echo "being reconciled. Re-run this workflow manually with deploy_to_staging"
+          echo "ticked, or create/deploy production from the specs in .do/."

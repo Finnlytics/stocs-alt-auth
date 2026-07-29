@@ -3,6 +3,11 @@
 .env
 .env.backup
 .env.production
+.env.staging
+# Real env files are ignored above because Laravel loads .env.{APP_ENV} at boot, so those
+# filenames mean "contains secrets". The .env.*.example templates are committed on
+# purpose: they hold the non-secret half of each environment's config and are read by the
+# deploy workflow. Keep that distinction, and never put a secret in a .example file.
 .phpactor.json
 .phpunit.result.cache
 /.cursor/

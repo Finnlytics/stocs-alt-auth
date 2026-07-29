@@ -5,12 +5,12 @@ use App\Http\Middleware\EnsureSuperAdmin;
 use App\Http\Middleware\ForceJsonResponse;
 use App\Http\Middleware\SecurityHeaders;
 use App\Http\Middleware\ValidateServiceApiKey;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Request;
-use Illuminate\Auth\AuthenticationException;
 use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
