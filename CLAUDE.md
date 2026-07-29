@@ -4,6 +4,14 @@ Stocs Auth is a headless API authentication service, intended as the single sour
 
 **Current scope:** stocs-bids is the only consumer today. stocs-b2b still has its own authentication and does **not** authenticate through this service; migrating it is a future intention, and the plan is in [B2B Migration Plan](#b2b-migration-plan) below. Treat the B2B endpoints and the `b2b` platform records as built-and-waiting rather than in use, and read blast-radius statements accordingly: an auth outage currently takes down consumer login on Bids, not B2B.
 
+## Documentation index
+
+| Doc | Covers |
+|---|---|
+| [.claude/docs/deployment.md](.claude/docs/deployment.md) | App Platform spec, env template + secret split, why the queue worker is load-bearing, the `doadmin` privilege question, what `APP_ENV` actually gates |
+| [.claude/docs/testing.md](.claude/docs/testing.md) | Suite setup and the environment traps that make tests lie |
+| [docs/openapi.yaml](docs/openapi.yaml) | Full OpenAPI 3.1 spec, also served at `GET /api/docs/openapi.yaml` |
+
 ## Hard Rules (NON-NEGOTIABLE)
 
 These apply to every change in this project. See `.claude/rules/` for full detail.
