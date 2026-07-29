@@ -166,13 +166,44 @@ jobs:
       # Deliberately does NOT push :latest. A mutable tag shared with staging builds is
       # how a staging image ends up in production; production deploys a specific tag.
 
+      # Guards a skip_build run against a mistyped image_tag, which would otherwise
+      # deploy an app pointing at an image that does not exist. On a fresh build it is
+      # near-redundant, since build-push-action already fails if the push fails.
+      #
+      # Uses JSON output and jq rather than parsing the table. `doctl registry repository
+      # list-tags` IGNORES both --format and --no-header and always prints the full
+      # four-column table with a header, so an earlier version of this step compared whole
+      # lines with `grep -qx` and therefore never matched. It reported a tag that was
+      # present as missing, which read as a registry or permissions fault and cost real
+      # time to diagnose.
+      #
+      # doctl's exit status is checked on its own, because piping it straight into a
+      # matcher made an access failure (empty output) indistinguishable from an absent tag.
+      #
+      # Retries because a tag pushed moments earlier is not always queryable immediately:
+      # the first failure of this step raced its own push by under a second.
       - name: Confirm the image exists in the registry
         run: |
-          if ! doctl registry repository list-tags "${{ env.IMAGE }}" --format Tag --no-header \
-               | grep -qx "${{ steps.tag.outputs.tag }}"; then
-            echo "::error::tag ${{ steps.tag.outputs.tag }} is not in the registry"
-            exit 1
-          fi
+          TAG='${{ steps.tag.outputs.tag }}'
+
+          for attempt in 1 2 3 4 5; do
+            if ! tags="$(doctl registry repository list-tags "$IMAGE" -o json 2>&1)"; then
+              echo "::error::could not list tags for $IMAGE, so this is registry access rather than a missing tag"
+              echo "$tags"
+              exit 1
+            fi
+
+            if printf '%s' "$tags" | jq -e --arg t "$TAG" 'any(.[]; .tag == $t)' >/dev/null; then
+              echo "tag $TAG confirmed in the registry"
+              exit 0
+            fi
+
+            echo "attempt $attempt/5: $TAG not visible yet, waiting 5s"
+            sleep 5
+          done
+
+          echo "::error::tag $TAG is not in the registry after 5 attempts"
+          exit 1
 
       # Redacted, so the log shows what will be applied without printing secret values.
       - name: Preview the rendered spec
