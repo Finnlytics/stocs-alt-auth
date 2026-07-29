@@ -16,8 +16,8 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->bind(OtpNotifier::class, function () {
             return config('otp.notifier') === 'file'
-                ? new FileOtpNotifier()
-                : new MailOtpNotifier();
+                ? new FileOtpNotifier
+                : new MailOtpNotifier;
         });
     }
 
@@ -28,13 +28,17 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(5)->by($request->ip());
         });
 
-        // OTP requests: business rule — max 5 per hour per identifier (also falls back to IP)
+        // OTP requests: coarse per-identifier network backstop only. The precise
+        // resend policy (initial send + 3 free resends, then exponential backoff
+        // to 1/day) lives in OtpService's DB-backed backoff — these caps just sit
+        // above it so they never block a legitimately-allowed resend (the 3 free
+        // resends can all land inside a minute) while still stopping raw floods.
         RateLimiter::for('otp', function (Request $request) {
             $key = $request->input('identifier') ?: $request->ip();
 
             return [
-                Limit::perHour(5)->by('otp:hour:'.$key),
-                Limit::perMinute(3)->by('otp:minute:'.$key),
+                Limit::perHour(8)->by('otp:hour:'.$key),
+                Limit::perMinute(5)->by('otp:minute:'.$key),
             ];
         });
 
