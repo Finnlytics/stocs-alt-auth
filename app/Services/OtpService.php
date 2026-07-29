@@ -7,6 +7,7 @@ use App\Enums\OtpRequestResult;
 use App\Repositories\OtpRepository;
 use App\Repositories\OtpRequestAttemptRepository;
 use App\Repositories\UserRepository;
+use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
@@ -17,20 +18,32 @@ class OtpService
 
     private const MAX_ATTEMPTS = 3;
 
-    // BUSINESS RULE: exponential backoff against email-spam abuse. The Nth
-    // unverified request locks the identifier for $BACKOFF_SECONDS[N] seconds.
-    // First request is free (index 0). After 6+ unverified requests in a
-    // session we hold them at 24h. Counter resets on a successful verify or
-    // after 24h of inactivity (see resetIfStale()).
+    // BUSINESS RULE: resend policy. A caller may request their first code and
+    // then resend it up to 3 more times with no wait (someone who didn't get
+    // the email shouldn't be punished). After those 3 free resends we back off
+    // exponentially — 5 min, 1 hour, 6 hours — and cap at 24 hours (max one
+    // code per day) to stop anyone bashing the endpoint to send loads of email.
+    //
+    // Indexed by the count of the request that just completed: after the Nth
+    // unverified request we lock the identifier for BACKOFF_SECONDS[N] seconds.
+    // Index 0 is unused (counts start at 1). The counter resets on a successful
+    // verify or after 24h of inactivity (see isStale()).
     private const BACKOFF_SECONDS = [
-        0,        // 1st request: no delay until next
-        30,       // 2nd request: 30s
-        120,      // 3rd: 2 min
-        600,      // 4th: 10 min
-        3600,     // 5th: 1 hour
-        21600,    // 6th: 6 hours
-        86400,    // 7th+: 24 hours (cap)
+        0,        // [0] unused — request count starts at 1
+        0,        // [1] after the initial send   → 1st resend is free
+        0,        // [2] after the 1st resend     → 2nd resend is free
+        0,        // [3] after the 2nd resend     → 3rd resend is free
+        300,      // [4] after the 3rd resend     → 5 min before the next
+        3600,     // [5] after the 4th resend     → 1 hour
+        21600,    // [6] after the 5th resend     → 6 hours
+        86400,    // [7]+ after the 6th resend    → 24 hours (cap, 1 per day)
     ];
+
+    // BUSINESS RULE: once a caller has burned through all 3 free resends (the
+    // 4th send in a session) they've entered the backoff zone — surface that to
+    // admins once, via the audit log, so persistent resend abuse (or a user who
+    // genuinely can't receive codes) is visible.
+    private const RESEND_FLAG_THRESHOLD = 4;
 
     private const STALE_INACTIVITY_HOURS = 24;
 
@@ -39,6 +52,7 @@ class OtpService
         private readonly OtpRequestAttemptRepository $attemptRepository,
         private readonly UserRepository $userRepository,
         private readonly OtpNotifier $notifier,
+        private readonly AuditService $auditService,
     ) {}
 
     /**
@@ -48,7 +62,7 @@ class OtpService
      *
      * @return array{result: OtpRequestResult, retry_after?: int}
      */
-    public function requestForLogin(string $identifier, string $identifierType = 'email'): array
+    public function requestForLogin(string $identifier, string $identifierType = 'email', ?Request $request = null): array
     {
         if (($backoff = $this->checkBackoff($identifier, $identifierType)) !== null) {
             return $backoff;
@@ -64,7 +78,7 @@ class OtpService
             return ['result' => OtpRequestResult::ACCOUNT_NOT_FOUND];
         }
 
-        $this->dispatch($identifier, $identifierType, $user->id);
+        $this->dispatch($identifier, $identifierType, $user->id, $request);
 
         return ['result' => OtpRequestResult::SENT];
     }
@@ -75,7 +89,7 @@ class OtpService
      *
      * @return array{result: OtpRequestResult, retry_after?: int}
      */
-    public function requestForSignup(string $identifier, string $identifierType = 'email'): array
+    public function requestForSignup(string $identifier, string $identifierType = 'email', ?Request $request = null): array
     {
         $user = $this->userRepository->findByEmail($identifier);
 
@@ -87,7 +101,7 @@ class OtpService
             return $backoff;
         }
 
-        $this->dispatch($identifier, $identifierType, null);
+        $this->dispatch($identifier, $identifierType, null, $request);
 
         return ['result' => OtpRequestResult::SENT];
     }
@@ -163,7 +177,7 @@ class OtpService
         return null;
     }
 
-    private function dispatch(string $identifier, string $identifierType, ?int $userId): void
+    private function dispatch(string $identifier, string $identifierType, ?int $userId, ?Request $request = null): void
     {
         $this->otpRepository->invalidateForIdentifier($identifier, $identifierType);
 
@@ -178,12 +192,14 @@ class OtpService
             'created_at' => now(),
         ]);
 
-        $this->bumpAttempt($identifier, $identifierType);
+        $newCount = $this->bumpAttempt($identifier, $identifierType);
+
+        $this->flagIfExcessiveResends($identifier, $identifierType, $userId, $newCount, $request);
 
         $this->notifier->send($identifier, $identifierType, $code);
     }
 
-    private function bumpAttempt(string $identifier, string $identifierType): void
+    private function bumpAttempt(string $identifier, string $identifierType): int
     {
         $attempt = $this->attemptRepository->findFor($identifier, $identifierType);
 
@@ -198,6 +214,39 @@ class OtpService
             $identifierType,
             $newCount,
             now()->addSeconds($this->backoffFor($newCount)),
+        );
+
+        return $newCount;
+    }
+
+    // BUSINESS RULE: raise a single admin-visible audit entry the moment a
+    // caller crosses the free-resend ceiling (see RESEND_FLAG_THRESHOLD). We
+    // fire once (on the exact crossing) so a session produces at most one flag;
+    // the counter resets on verify / staleness, so a genuinely abusive caller
+    // re-flags on their next fresh burst. No PII: the identifier is stored as a
+    // truncated SHA-256, never the raw email.
+    private function flagIfExcessiveResends(
+        string $identifier,
+        string $identifierType,
+        ?int $userId,
+        int $count,
+        ?Request $request,
+    ): void {
+        if ($count !== self::RESEND_FLAG_THRESHOLD) {
+            return;
+        }
+
+        $this->auditService->log(
+            'otp_resend_flagged',
+            'Excessive OTP resend requests — free-resend ceiling reached',
+            $userId,
+            null,
+            [
+                'identifier_hash' => substr(hash('sha256', $identifier), 0, 12),
+                'identifier_type' => $identifierType,
+                'resend_count' => $count,
+            ],
+            $request,
         );
     }
 

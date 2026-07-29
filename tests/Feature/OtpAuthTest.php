@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AuthAuditLog;
 use App\Models\OtpRequestAttempt;
 use App\Models\OtpToken;
 use App\Models\User;
@@ -109,30 +110,52 @@ class OtpAuthTest extends TestCase
     // Exponential backoff
     // ──────────────────────────────────────────────
 
-    public function test_second_signup_request_within_backoff_window_is_rate_limited(): void
+    public function test_first_three_resends_are_free(): void
     {
-        $payload = ['identifier' => 'spam-target@example.com'];
+        // BUSINESS RULE: a user who didn't get their code must be able to resend
+        // it up to 3 times with no wait. The initial send + 3 resends all send.
+        $payload = ['identifier' => 'resendy@example.com'];
 
-        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
+        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202); // initial
+        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202); // resend 1
+        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202); // resend 2
+        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202); // resend 3
 
+        // Only the latest token survives (prior unverified tokens are invalidated).
+        $this->assertDatabaseCount('otp_tokens', 1);
+        $this->assertDatabaseHas('otp_request_attempts', [
+            'identifier' => 'resendy@example.com',
+            'unverified_count' => 4,
+        ]);
+    }
+
+    public function test_fourth_resend_is_backed_off_five_minutes(): void
+    {
+        $payload = ['identifier' => 'over-resender@example.com'];
+
+        // initial + 3 free resends
+        foreach (range(1, 4) as $i) {
+            $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
+        }
+
+        // The 4th resend (5th send) is now blocked for ~5 minutes.
         $response = $this->postJson('/api/v1/auth/otp/request/signup', $payload);
 
         $response->assertStatus(429);
         $response->assertJsonPath('code', 'rate_limited');
-        $this->assertGreaterThan(0, $response->json('retry_after'));
         $response->assertHeader('Retry-After');
-
-        $this->assertDatabaseCount('otp_tokens', 1);
+        $this->assertEqualsWithDelta(300, $response->json('retry_after'), 5);
     }
 
-    public function test_login_request_applies_backoff_for_existing_user(): void
+    public function test_login_request_allows_free_resends_for_existing_user(): void
     {
         $this->createBidsUser('member-bk@example.com');
 
         $payload = ['identifier' => 'member-bk@example.com'];
 
+        // The resend allowance applies to the sign-in flow too.
         $this->postJson('/api/v1/auth/otp/request/login', $payload)->assertStatus(202);
-        $this->postJson('/api/v1/auth/otp/request/login', $payload)->assertStatus(429);
+        $this->postJson('/api/v1/auth/otp/request/login', $payload)->assertStatus(202);
     }
 
     public function test_login_request_does_not_track_attempts_for_unknown_emails(): void
@@ -198,25 +221,75 @@ class OtpAuthTest extends TestCase
         ]);
     }
 
-    public function test_backoff_ramps_exponentially(): void
+    public function test_backoff_ramps_exponentially_after_free_resends(): void
     {
         $payload = ['identifier' => 'ramp@example.com'];
 
-        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
+        // Initial send + first two resends: all free (no wait until next).
+        foreach (range(1, 3) as $i) {
+            $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
+        }
 
         $attempt = OtpRequestAttempt::firstWhere('identifier', 'ramp@example.com');
-        $this->assertSame(1, $attempt->unverified_count);
-        // After 1st request, 2nd is delayed by 30s.
-        $this->assertEqualsWithDelta(30, now()->diffInSeconds($attempt->next_allowed_at, false), 2);
+        $this->assertSame(3, $attempt->unverified_count);
+        $this->assertFalse($attempt->isInBackoff(), 'first 3 resends must not arm a wait');
 
-        // Jump past the first window so the next request is allowed, then bump.
+        // 3rd resend (4th send) arms the first real backoff: 5 minutes.
+        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
+        $attempt->refresh();
+        $this->assertSame(4, $attempt->unverified_count);
+        $this->assertEqualsWithDelta(300, now()->diffInSeconds($attempt->next_allowed_at, false), 3);
+
+        // Jump past the 5-min window; the next send arms 1 hour.
         $attempt->update(['next_allowed_at' => now()->subSecond()]);
         $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
-
         $attempt->refresh();
-        $this->assertSame(2, $attempt->unverified_count);
-        // After 2nd request, 3rd is delayed by 2m.
-        $this->assertEqualsWithDelta(120, now()->diffInSeconds($attempt->next_allowed_at, false), 2);
+        $this->assertSame(5, $attempt->unverified_count);
+        $this->assertEqualsWithDelta(3600, now()->diffInSeconds($attempt->next_allowed_at, false), 3);
+    }
+
+    // ──────────────────────────────────────────────
+    // Admin flagging of excessive resends
+    // ──────────────────────────────────────────────
+
+    public function test_crossing_free_resend_ceiling_writes_a_single_admin_flag(): void
+    {
+        $email = 'flagme@example.com';
+        $payload = ['identifier' => $email];
+
+        // Initial send + 3 resends. The 4th send crosses the ceiling → 1 flag.
+        foreach (range(1, 4) as $i) {
+            $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(202);
+        }
+
+        $flags = AuthAuditLog::where('action', 'otp_resend_flagged')->get();
+        $this->assertCount(1, $flags);
+
+        $flag = $flags->first();
+        $this->assertNull($flag->user_id); // signup — no user account yet
+        $this->assertSame(4, $flag->metadata['resend_count']);
+        $this->assertSame(substr(hash('sha256', $email), 0, 12), $flag->metadata['identifier_hash']);
+
+        // No PII: the raw email must never land in the audit row.
+        $this->assertStringNotContainsString($email, json_encode($flag->getAttributes()));
+
+        // The next request is inside the backoff window (blocked, no send) and
+        // must NOT raise a second flag.
+        $this->postJson('/api/v1/auth/otp/request/signup', $payload)->assertStatus(429);
+        $this->assertSame(1, AuthAuditLog::where('action', 'otp_resend_flagged')->count());
+    }
+
+    public function test_login_resend_flag_ties_to_the_user(): void
+    {
+        $user = $this->createBidsUser('flagged-member@example.com');
+        $payload = ['identifier' => $user->email];
+
+        foreach (range(1, 4) as $i) {
+            $this->postJson('/api/v1/auth/otp/request/login', $payload)->assertStatus(202);
+        }
+
+        $flag = AuthAuditLog::where('action', 'otp_resend_flagged')->firstOrFail();
+        $this->assertSame($user->id, $flag->user_id);
     }
 
     // ──────────────────────────────────────────────

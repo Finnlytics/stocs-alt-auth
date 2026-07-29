@@ -105,7 +105,8 @@ Users have access to platforms via the `user_platforms` pivot table:
 ### OTP Auth (Bids)
 - 6-digit code, hashed, 10-minute expiry
 - Max 3 verification attempts per code
-- Max 5 OTP requests per identifier per hour
+- **Resend policy** (`OtpService::BACKOFF_SECONDS`): initial send + 3 free resends (no wait), then exponential backoff — 5 min → 1 hour → 6 hours → 24 hours (capped at 1/day). Counter resets on a successful verify or 24h of inactivity. A DB-backed `otp_request_attempts` row tracks the per-identifier count; the coarse in-memory `throttle:otp` limiter (8/hour, 5/min) sits above it as a raw-flood backstop only.
+- Crossing the free-resend ceiling (4th send) writes one `otp_resend_flagged` audit entry (queryable via `GET /admin/audit-logs?action=otp_resend_flagged`) so admins can spot abuse. No PII — the identifier is stored as a truncated SHA-256.
 - New users created on first successful OTP verification
 
 ## Operator Admins

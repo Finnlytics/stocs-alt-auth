@@ -24,7 +24,8 @@ class OtpController extends Controller
     {
         $result = $this->otpService->requestForLogin(
             $request->validated('identifier'),
-            $request->validated('type', 'email')
+            $request->validated('type', 'email'),
+            $request
         );
 
         // BUSINESS RULE: respond identically for SENT and ACCOUNT_NOT_FOUND so
@@ -44,7 +45,8 @@ class OtpController extends Controller
     {
         $result = $this->otpService->requestForSignup(
             $request->validated('identifier'),
-            $request->validated('type', 'email')
+            $request->validated('type', 'email'),
+            $request
         );
 
         return match ($result['result']) {

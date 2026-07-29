@@ -37,8 +37,9 @@ class PlatformAccessService
 
     /**
      * Grant auto-approved access to a consumer platform (Bids, Buy). Consumer
-     * platforms authenticate via OTP and need no screening. B2B is the
-     * exception (admin approval) and has its own pending-status grant.
+     * platforms authenticate via OTP and need no screening, so access is
+     * approved immediately. B2B is the exception (admin approval) and has its
+     * own pending-status grant.
      */
     public function grantConsumerAccess(User $user, Platform $platform, string $role = 'consumer'): UserPlatform
     {
@@ -53,9 +54,9 @@ class PlatformAccessService
 
     /**
      * Admins are shared across every platform — one admin account works on B2B,
-     * Bids and Buy. Granting admin approves the account on all of them so a
-     * consuming app's admin panel (which validates the token/role against this
-     * service) recognises the admin regardless of which site they log in on.
+     * Bids and Buy. Granting admin here approves the account on all of them so a
+     * consuming app's admin panel (which validates the token / role against
+     * this service) recognises the admin regardless of which site they log in on.
      */
     public function grantAdminAccess(User $user): void
     {
