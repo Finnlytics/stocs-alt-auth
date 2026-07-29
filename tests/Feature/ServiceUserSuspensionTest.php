@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Enums\PlatformStatus;
+use App\Models\AuthAuditLog;
 use App\Models\ServiceApiKey;
 use App\Models\User;
 use App\Models\UserPlatform;
@@ -129,6 +130,28 @@ class ServiceUserSuspensionTest extends TestCase
         $access = UserPlatform::where('user_id', $user->id)->where('platform', 'bids')->first();
         $this->assertSame(PlatformStatus::APPROVED->value, $access->status);
         $this->assertNotNull($access->approved_at);
+    }
+
+    public function test_reinstate_records_an_optional_reason_in_the_audit_log(): void
+    {
+        $headers = $this->serviceKey();
+        $user = $this->bidsUser();
+        UserPlatform::where('user_id', $user->id)->where('platform', 'bids')
+            ->update(['status' => PlatformStatus::SUSPENDED->value]);
+
+        $this->withHeaders($headers)
+            ->postJson("/api/v1/service/users/{$user->uuid}/reinstate", [
+                'platform' => 'bids',
+                'reason' => 'Payment received',
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('auth_audit_logs', [
+            'user_id' => $user->id,
+            'action' => 'reinstated',
+        ]);
+        $log = AuthAuditLog::where('user_id', $user->id)->where('action', 'reinstated')->first();
+        $this->assertSame('Payment received', $log->metadata['reason']);
     }
 
     public function test_reinstate_rejects_a_user_that_is_not_suspended(): void

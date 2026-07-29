@@ -90,7 +90,7 @@ class UserSuspensionController extends Controller
             "User reinstated on {$platform} by service",
             $user->id,
             $platform,
-            null,
+            ['reason' => $request->validated('reason')],
             $request,
         );
 

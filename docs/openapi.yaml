@@ -150,11 +150,9 @@ paths:
         sending any email — this prevents using the endpoint to enumerate
         registered emails.
 
-        Rate limited to 5/hour and 3/min per identifier via the in-memory
-        throttle, and additionally subject to a database-backed exponential
-        backoff that ramps `30s → 2m → 10m → 1h → 6h → 24h` for unverified
-        requests against an existing user. The backoff resets on successful
-        verification or after 24h of inactivity.
+        Rate limited per identifier, database-backed: a 30s cooldown between
+        requests, and a cap of 8 per rolling hour. Resets on successful
+        verification.
       security: []
       requestBody:
         required: true
@@ -191,8 +189,8 @@ paths:
       description: |
         Sends an OTP for a new account. Refuses with 409 if an account already
         exists for the identifier (the caller should redirect to the sign-in
-        flow). Subject to the same database-backed exponential backoff as the
-        sign-in endpoint.
+        flow). Subject to the same per-identifier rate limit as the sign-in
+        endpoint.
       security: []
       requestBody:
         required: true

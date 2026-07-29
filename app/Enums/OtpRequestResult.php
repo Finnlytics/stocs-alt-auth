@@ -16,6 +16,12 @@ enum OtpRequestResult: string
     // status so the frontend can redirect them to sign in.
     case ACCOUNT_ALREADY_EXISTS = 'account_already_exists';
 
+    // Login flow: the user exists but their Bids access is suspended. Unlike
+    // ACCOUNT_NOT_FOUND we don't hide this — mirrors the explicit disclosure
+    // already made at OTP-verify time (LoginResult::SUSPENDED) — so no OTP is
+    // wasted sending a code to an account that would be blocked anyway.
+    case ACCOUNT_SUSPENDED = 'account_suspended';
+
     // Identifier is currently locked out by exponential backoff. The caller
     // must respect retry_after.
     case RATE_LIMITED = 'rate_limited';

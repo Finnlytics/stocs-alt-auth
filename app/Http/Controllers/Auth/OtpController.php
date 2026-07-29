@@ -29,13 +29,20 @@ class OtpController extends Controller
         );
 
         // BUSINESS RULE: respond identically for SENT and ACCOUNT_NOT_FOUND so
-        // the endpoint can't be used to enumerate registered emails.
+        // the endpoint can't be used to enumerate registered emails. Suspended
+        // accounts are the one deliberate exception — mirrors the explicit
+        // disclosure already made at OTP-verify time — so a suspended bidder
+        // is told immediately instead of waiting on a code that'll be blocked.
         return match ($result['result']) {
             OtpRequestResult::SENT,
             OtpRequestResult::ACCOUNT_NOT_FOUND => response()->json([
                 'message' => 'If an account exists for that email, we\'ve sent a sign-in code.',
                 'expires_in' => 600,
             ], 202),
+            OtpRequestResult::ACCOUNT_SUSPENDED => response()->json([
+                'message' => 'Your account is suspended. Please contact support.',
+                'status' => 'suspended',
+            ], 403),
             OtpRequestResult::RATE_LIMITED => $this->rateLimitedResponse($result['retry_after'] ?? 60),
             default => response()->json(['message' => 'Unable to process request.'], 422),
         };

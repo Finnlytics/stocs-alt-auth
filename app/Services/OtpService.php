@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Contracts\OtpNotifier;
 use App\Enums\OtpRequestResult;
+use App\Enums\Platform;
 use App\Repositories\OtpRepository;
 use App\Repositories\OtpRequestAttemptRepository;
 use App\Repositories\UserRepository;
@@ -76,6 +77,12 @@ class OtpService
             // 429 boundary. The in-memory throttle:otp middleware still caps
             // raw request volume per identifier/IP.
             return ['result' => OtpRequestResult::ACCOUNT_NOT_FOUND];
+        }
+
+        if ($user->platformAccess(Platform::BIDS)?->isSuspended()) {
+            // No point sending a code the verify step will reject anyway
+            // (AuthService::completeBidsRegistration blocks suspended access).
+            return ['result' => OtpRequestResult::ACCOUNT_SUSPENDED];
         }
 
         $this->dispatch($identifier, $identifierType, $user->id, $request);

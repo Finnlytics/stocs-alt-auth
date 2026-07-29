@@ -2,10 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Models\OtpRequestAttempt;
 use App\Models\User;
 use App\Models\UserPlatform;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -132,13 +132,15 @@ class AdminUsersTest extends TestCase
             'status' => 'suspended',
         ]);
 
-        // Exhaust the OTP rate limit for this identifier (5/hour key from
-        // AppServiceProvider's `throttle:otp` limiter).
-        for ($i = 0; $i < 5; $i++) {
-            RateLimiter::hit('otp:hour:'.$user->email, 3600);
-            RateLimiter::hit('otp:minute:'.$user->email, 60);
-        }
-        $this->assertTrue(RateLimiter::tooManyAttempts('otp:hour:'.$user->email, 5));
+        // Put this identifier deep into the resend backoff, so approval has
+        // something real to clear.
+        OtpRequestAttempt::create([
+            'identifier' => $user->email,
+            'identifier_type' => 'email',
+            'unverified_count' => 6,
+            'last_request_at' => now(),
+            'next_allowed_at' => now()->addDay(),
+        ]);
 
         $response = $this->postJson("/api/v1/admin/users/{$user->uuid}/approve", [
             'platform' => 'bids',
@@ -147,8 +149,11 @@ class AdminUsersTest extends TestCase
         ]);
 
         $response->assertOk();
-        $this->assertFalse(RateLimiter::tooManyAttempts('otp:hour:'.$user->email, 5));
-        $this->assertFalse(RateLimiter::tooManyAttempts('otp:minute:'.$user->email, 3));
+        $this->assertDatabaseHas('otp_request_attempts', [
+            'identifier' => $user->email,
+            'unverified_count' => 0,
+            'next_allowed_at' => null,
+        ]);
     }
 
     public function test_non_admin_cannot_access_admin_endpoints(): void

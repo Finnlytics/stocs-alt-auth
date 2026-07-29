@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\Platform;
 use App\Models\AuthAuditLog;
 use App\Models\OtpRequestAttempt;
 use App\Models\OtpToken;
@@ -509,5 +510,50 @@ class OtpAuthTest extends TestCase
         ]);
 
         $response->assertStatus(422);
+    }
+
+    public function test_route_level_auth_throttle_returns_clean_json_not_a_debug_trace(): void
+    {
+        $payload = ['email' => 'nobody@example.com', 'password' => 'wrong'];
+
+        for ($i = 0; $i < 5; $i++) {
+            $this->postJson('/api/v1/auth/login/b2b', $payload);
+        }
+
+        $response = $this->postJson('/api/v1/auth/login/b2b', $payload);
+
+        $response->assertStatus(429);
+        $response->assertJsonPath('code', 'route_throttled');
+        $response->assertJsonStructure(['message', 'code', 'retry_after']);
+        $this->assertGreaterThan(0, $response->json('retry_after'));
+        $response->assertHeader('Retry-After');
+        $this->assertArrayNotHasKey('exception', $response->json());
+    }
+
+    public function test_login_request_blocks_suspended_user_and_does_not_send_otp(): void
+    {
+        $user = $this->createBidsUser('suspended@example.com');
+        $user->platformAccess(Platform::BIDS)->update(['status' => 'suspended']);
+
+        $response = $this->postJson('/api/v1/auth/otp/request/login', [
+            'identifier' => 'suspended@example.com',
+        ]);
+
+        $response->assertStatus(403);
+        $response->assertJsonPath('status', 'suspended');
+
+        $this->assertDatabaseCount('otp_tokens', 0);
+    }
+
+    public function test_signup_request_refuses_when_account_already_exists_with_different_case(): void
+    {
+        $this->createBidsUser('already@example.com');
+
+        $response = $this->postJson('/api/v1/auth/otp/request/signup', [
+            'identifier' => 'Already@Example.com',
+        ]);
+
+        $response->assertStatus(409);
+        $response->assertJsonPath('code', 'account_exists');
     }
 }

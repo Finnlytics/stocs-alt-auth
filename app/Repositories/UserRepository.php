@@ -4,6 +4,7 @@ namespace App\Repositories;
 
 use App\Models\User;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Str;
 
 class UserRepository
 {
@@ -19,7 +20,10 @@ class UserRepository
 
     public function findByEmail(string $email): ?User
     {
-        return User::with('platforms')->where('email', $email)->first();
+        // Stored emails are always lowercased (User::email mutator); normalize
+        // the lookup value the same way so casing differences at call sites
+        // (OTP identifier, admin search, service lookups) don't miss a match.
+        return User::with('platforms')->where('email', Str::lower(trim($email)))->first();
     }
 
     public function create(array $data): User
