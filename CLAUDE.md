@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-Stocs Auth is a headless API authentication service. It is the single source of truth for user identity across the STOCS platform (B2B and Bids). No admin UI — B2B and Bids admin panels call these API endpoints.
+Stocs Auth is a headless API authentication service, intended as the single source of truth for user identity across the STOCS platform. No admin UI — consuming apps' admin panels call these API endpoints.
+
+**Current scope:** stocs-bids is the only consumer today. stocs-b2b still has its own authentication and does **not** authenticate through this service; migrating it is a future intention, and the plan is in [B2B Migration Plan](#b2b-migration-plan) below. Treat the B2B endpoints and the `b2b` platform records as built-and-waiting rather than in use, and read blast-radius statements accordingly: an auth outage currently takes down consumer login on Bids, not B2B.
 
 ## Hard Rules (NON-NEGOTIABLE)
 
@@ -15,8 +17,10 @@ These apply to every change in this project. See `.claude/rules/` for full detai
 
 ## Quick Commands
 
+The Laravel app lives at the **repo root** — there is no `src/` subdirectory here (unlike stocs-bids).
+Run everything from `stocs-auth/`.
+
 ```bash
-cd src
 composer install
 php artisan migrate:fresh --seed
 php artisan serve
@@ -39,24 +43,25 @@ php artisan test
 
 | Area | Files |
 |------|-------|
-| Models | `src/app/Models/` — User, UserPlatform, OtpToken, ServiceApiKey, AuthAuditLog |
-| Services | `src/app/Services/` — AuthService, OtpService, PasswordResetService, PlatformAccessService, AuditService |
-| Repositories | `src/app/Repositories/` |
-| Auth Controllers | `src/app/Http/Controllers/Auth/` |
-| Admin Controllers | `src/app/Http/Controllers/Admin/` |
-| Service Controllers | `src/app/Http/Controllers/Service/` |
-| Middleware | `src/app/Http/Middleware/` |
-| Mail | `src/app/Mail/` |
-| Enums | `src/app/Enums/` — Platform, PlatformRole, PlatformStatus |
+| Models | `app/Models/` — User, UserPlatform, OtpToken, PasswordResetToken, OtpRequestAttempt, ServiceApiKey, AuthAuditLog |
+| Services | `app/Services/` — AuthService, OtpService, PasswordResetService, PlatformAccessService, AuditService |
+| Repositories | `app/Repositories/` |
+| Auth Controllers | `app/Http/Controllers/Auth/` |
+| Admin Controllers | `app/Http/Controllers/Admin/` |
+| Service Controllers | `app/Http/Controllers/Service/` |
+| Middleware | `app/Http/Middleware/` |
+| Mail | `app/Mail/` |
+| Enums | `app/Enums/` — Platform, PlatformRole, PlatformStatus, LoginResult, OtpRequestResult |
 
 ## API Endpoints
 
-Full OpenAPI 3.1 spec at [src/docs/openapi.yaml](src/docs/openapi.yaml) — also served at `GET /api/docs/openapi.yaml` (no auth). Import into Postman, Insomnia, or use for client generation (openapi-generator, orval, etc.). Update the spec in the same change as any endpoint contract change.
+Full OpenAPI 3.1 spec at [docs/openapi.yaml](docs/openapi.yaml) — also served at `GET /api/docs/openapi.yaml` (no auth). Import into Postman, Insomnia, or use for client generation (openapi-generator, orval, etc.). Update the spec in the same change as any endpoint contract change.
 
 ### Public Auth (`/api/v1/auth/`)
 - `POST /register/b2b` �� B2B password registration
 - `POST /login/b2b` — B2B password login
-- `POST /otp/request` — Request OTP (Bids)
+- `POST /otp/request/login` — Request OTP for an existing account (Bids). Never creates a user, and doesn't generate a code or email for an unknown address.
+- `POST /otp/request/signup` — Request OTP with explicit sign-up intent (Bids)
 - `POST /otp/verify` — Verify OTP, returns token
 - `POST /password/forgot` — Request password reset
 - `POST /password/reset` — Reset with token
@@ -82,10 +87,14 @@ Full OpenAPI 3.1 spec at [src/docs/openapi.yaml](src/docs/openapi.yaml) — also
 
 ### Service-to-Service (`/api/v1/service/` + X-Service-Key header)
 - `POST /validate-token` — Validate a Sanctum token
+- `GET /users` — List/filter users (backs the Bids admin "All users" directory)
 - `GET /users/{uuid}` — Lookup user by UUID
 - `GET /users/by-email/{email}` — Lookup by email
 - `POST /users/{uuid}/suspend` — Suspend a user's platform access (body: `platform` default `bids`, optional `reason`). Sets `user_platforms.status = 'suspended'` and revokes the user's tokens — OTP login then blocks re-entry until an admin lifts it. Used by Bids to suspend an auction winner who didn't pay. Shares `PlatformAccessService::suspend()` with the admin suspend endpoint.
 - `POST /users/{uuid}/reinstate` — Lift a suspension (body: `platform` default `bids`). Returns `user_platforms.status` to `approved`. Only acts on a currently-suspended account (422 otherwise). Used by the Bids admin "All users" page.
+- `POST /test-users/mint` — **Dev only.** Mints N Bids-scoped tokens for load testing (`bids:simulate-http`). `TestUsersController` refuses to run when `APP_ENV=production`.
+
+Unauthenticated utility routes: `GET /api/health` and `GET /api/docs/openapi.yaml`.
 
 Issue service keys via: `php artisan auth:issue-service-key <name> <b2b|bids>`. Keys are returned once in `{prefix}.{secret}` form; only the hashed secret is stored. Consumers send the full key in the `X-Service-Key` header.
 
@@ -113,7 +122,7 @@ Users have access to platforms via the `user_platforms` pivot table:
 
 Operator admin accounts (super-admins with approved access on every platform) are seeded by `AdminUsersSeeder` from `config/admins.php`. Each config entry pulls its email, password, and name from numbered env vars; entries with a missing email or password are silently skipped, so unused slots stay inert in production.
 
-**Config**: [config/admins.php](src/config/admins.php) — one array entry per admin slot.
+**Config**: [config/admins.php](config/admins.php) — one array entry per admin slot.
 
 **Env**:
 
@@ -151,7 +160,7 @@ This runs `2026_04_17_000001_add_auth_user_uuid_to_users_table.php`.
 ### Step 2: Migrate users into stocs-auth
 
 ```bash
-cd stocs-auth/src
+cd stocs-auth
 
 # Preview what will be migrated (no changes made)
 php artisan auth:migrate-b2b-users --dry-run
@@ -186,7 +195,7 @@ Both services must be running for B2B login/register/password reset to work:
 
 ```bash
 # Terminal 1: Start stocs-auth
-cd stocs-auth/src && php artisan serve --port=8098
+cd stocs-auth && php artisan serve --port=8098
 
 # Terminal 2: Start stocs-b2b (with auth URL pointing to stocs-auth)
 cd stocs-b2b/src && STOCS_AUTH_URL=http://localhost:8098 php artisan serve
@@ -194,7 +203,7 @@ cd stocs-b2b/src && STOCS_AUTH_URL=http://localhost:8098 php artisan serve
 
 ## Environment
 
-- Local: SQLite at `src/database/database.sqlite`
+- Local: SQLite at `database/database.sqlite`
 - Production: MySQL 8.0
 - Testing: In-memory SQLite
 

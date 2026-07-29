@@ -16,8 +16,8 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->bind(OtpNotifier::class, function () {
             return config('otp.notifier') === 'file'
-                ? new FileOtpNotifier()
-                : new MailOtpNotifier();
+                ? new FileOtpNotifier
+                : new MailOtpNotifier;
         });
     }
 

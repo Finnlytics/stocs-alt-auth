@@ -1,0 +1,154 @@
+# App Platform spec: stocs-auth PRODUCTION.
+#
+# The headless identity API. (Future) Single source of truth for user identity across the whole
+# STOCS platform, Bids and eventually Bulk, which is why an outage here takes login down
+# everywhere rather than only on one site.
+#
+# ---------------------------------------------------------------------------
+# HOW THIS FILE IS USED
+#
+# `doctl apps update --spec` REPLACES the entire spec, so anything absent here is
+# deleted from the live app. The env vars are therefore assembled rather than
+# hand-maintained: the deploy workflow reads .env.production.example for the non-secret
+# half, pulls APP_KEY, DB_PASSWORD and MAIL_PASSWORD from GitHub Secrets, and appends
+# both to the envs block below before applying.
+#
+# __IMAGE_TAG__ is substituted by the workflow. It deliberately avoids ${...} so it
+# cannot be confused with a DigitalOcean binding.
+#
+# ---------------------------------------------------------------------------
+# READ OFF THE RUNNING APP
+#
+# Component layout, run commands and instance sizes came from `doctl apps spec get`
+# rather than from inference. That method has caught real bugs in the bids specs, so
+# prefer it over reasoning about what these ought to be.
+#
+# Bindings are PROVEN here, which resolves a caveat left in the bids specs: the live app
+# already uses ${APP_URL} and ${stocs-main.DATABASE_URL}, so DigitalOcean resolves both
+# the self-referential and the database form.
+#
+# One thing not carried over: the live app sets DATABASE_URL from a binding, but Laravel
+# reads DB_URL (config/database.php `'url' => env('DB_URL')`), so DATABASE_URL is dead
+# config. The individual DB_* bindings below are what actually connect.
+
+name: stocs-auth-prod
+region: lon
+
+domains:
+  - domain: auth.stocs.com
+    type: PRIMARY
+
+# db_user is doadmin, matching the live app, NOT the dedicated auth_2026_07 user that
+# already exists on the cluster and is unused.
+#
+# This is worth changing and is deliberately not changed here. doadmin is the cluster
+# superuser, so it can read and write every database on this cluster: bids', b2b's,
+# prize-draw's. That is true regardless of which apps authenticate through auth, because
+# the cluster is shared, so a compromise of auth reaches data that has nothing to do with
+# identity. For the service that owns identity, that inverts least-privilege.
+#
+# Left alone because auth is the login path for the consumer site, so a privilege mistake
+# here takes bids login down entirely. Switching means first confirming auth_2026_07 has
+# full privileges on stocs_auth_prod, and staging is the place to prove that (see
+# .do/app.staging.yaml).
+databases:
+  - name: stocs-main
+    cluster_name: stocs-main
+    engine: MYSQL
+    version: "8"
+    db_name: stocs_auth_prod
+    db_user: doadmin
+    production: true
+
+# Shared by every component; component-level envs would override these. scope is
+# RUN_TIME because the image is built in GitHub Actions, so App Platform never builds
+# and build-time scope would mean nothing.
+#
+# DB_HOST uses the binding rather than the public hostname the live app hardcodes, which
+# also keeps the value out of the repo. Attaching the cluster above additionally adds
+# this app to the cluster's trusted sources automatically, which is how the existing apps
+# came to be listed there.
+envs:
+  - key: DB_CONNECTION
+    scope: RUN_TIME
+    value: mysql
+  - key: DB_HOST
+    scope: RUN_TIME
+    value: ${stocs-main.HOSTNAME}
+  - key: DB_PORT
+    scope: RUN_TIME
+    value: ${stocs-main.PORT}
+  - key: DB_DATABASE
+    scope: RUN_TIME
+    value: ${stocs-main.DATABASE}
+  - key: DB_USERNAME
+    scope: RUN_TIME
+    value: ${stocs-main.USERNAME}
+  - key: DB_PASSWORD
+    scope: RUN_TIME
+    value: ${stocs-main.PASSWORD}
+
+# Migrations only, matching the live app. Operator admins are NOT seeded on deploy:
+# AdminUsersSeeder reapplies the password from env on every run, so seeding here would
+# silently revert a password an operator changed. Seed once after a first deploy:
+#
+#   doctl apps console <APP_ID> --component api
+#   php artisan db:seed --class=AdminUsersSeeder
+#
+# ADMIN_1_* must be present in the app environment at that moment. Do not run a bare
+# `db:seed`: DatabaseSeeder also calls DemoUsersSeeder, which must never run in
+# production.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: php artisan migrate --force
+    image:
+      registry_type: DOCR
+      repository: stocs-auth
+      tag: __IMAGE_TAG__
+
+services:
+  - name: api
+    http_port: 8080
+    instance_count: 1
+    # basic-xxs, matching live. Unlike bids' web role this is not raised: auth is a
+    # headless JSON API with no asset pipeline and no Blade rendering, so it does not
+    # carry the same per-request memory profile.
+    instance_size_slug: basic-xxs
+    image:
+      registry_type: DOCR
+      repository: stocs-auth
+      tag: __IMAGE_TAG__
+    # No run_command: the image's default CMD is docker/start.sh, which primes the config
+    # and route caches from the runtime environment and then execs Apache.
+    health_check:
+      http_path: /up
+      initial_delay_seconds: 20
+      period_seconds: 10
+
+workers:
+  # NOT OPTIONAL, and the failure is the quietest in the platform.
+  #
+  # All five of auth's mailables implement ShouldQueue, including OtpCodeEmail. Consumer
+  # login is OTP-only, so with no worker no code is ever delivered and NOBODY CAN LOG IN
+  # to the consumer site, while auth itself returns 200s and looks healthy.
+  #
+  # No --queue flag, correctly: auth dispatches nothing to a named queue, so the default
+  # is all there is. (bids does use a named `sync` queue, which is why its worker needs
+  # --queue=default,sync.)
+  - name: queue
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    image:
+      registry_type: DOCR
+      repository: stocs-auth
+      tag: __IMAGE_TAG__
+    run_command: php artisan queue:work --tries=3 --backoff=60 --timeout=120
+
+# Added: the live app has no alerts, so a failed deploy of the platform's login service
+# currently passes unnoticed.
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED

@@ -19,6 +19,26 @@ php artisan test
 ./vendor/bin/pint
 ```
 
+## CI
+
+Every push to `main` runs a `validate` job that must pass before anything deploys:
+`composer validate --strict`, `composer audit --locked --no-dev`, `pint --test`, a
+`route:list` boot check, and the test suite. See
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml).
+
+Two things to know:
+
+- **The audit is blocking.** A newly published advisory in a transitive dependency can therefore
+  break deploys with no change on our side. Clear it with a targeted
+  `composer update <pkg> --with-dependencies` rather than disabling the check.
+- **larastan is not wired up yet.** stocs-b2b's CI runs phpstan; neither repo here has it installed.
+  Adding `larastan/larastan` plus a `phpstan.neon` to both repos is deliberate future work, not an
+  oversight.
+
+The suite needs no `.env`: `phpunit.xml` supplies a throwaway `APP_KEY`, so `vendor/bin/phpunit`
+works on a fresh clone. CI still writes one from `.env.example` because the boot check should boot
+with the config the app actually uses.
+
 ## Dev
 
 Default port for this service in the Stocs dev workflow is **8098**:

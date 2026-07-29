@@ -1,0 +1,212 @@
+name: Deploy Production (stocs-auth)
+run-name: "Deploy stocs-auth to production (${{ inputs.image_tag || github.sha }})"
+
+# Production deploys for stocs-auth. Manual dispatch only, for now.
+#
+# ---------------------------------------------------------------------------
+# WHY MANUAL, AND WHAT COMES LATER
+#
+# The eventual model mirrors stocs-b2b: push to `staging` deploys staging, and a v*
+# tag deploys production by promoting the exact image digest staging validated. That
+# needs a working staging environment, and staging's configuration is still being
+# reconciled, so requiring it now would block production behind it.
+#
+# Nothing is public yet, so the staging-then-production ordering has nothing to
+# protect. This workflow exists to stand production up; the release ceremony arrives
+# with deploy-staging.yml.
+#
+# ---------------------------------------------------------------------------
+# HOW THE ENVIRONMENT IS ASSEMBLED
+#
+# .do/render-spec.sh merges three inputs into one complete spec:
+#
+#   .do/app.yaml               structure, components, DB bindings
+#   .env.production.example    the non-secret half, committed
+#   GitHub Secrets             the secret half, named in .do/secrets.list
+#
+# The result is piped straight into doctl, so no secret value is ever written to disk
+# or to a CI artifact. NOTHING needs to be configured on DigitalOcean beforehand: the
+# rendered spec carries the whole environment, so `apps create` produces a fully
+# configured app in one call.
+#
+# The render refuses if a declared secret is unset or a __SET_ME__ placeholder is
+# unresolved, so a half-configured app cannot be deployed by accident.
+#
+# ---------------------------------------------------------------------------
+# FIRST RUN
+#
+# Prerequisites, in order:
+#
+#   1. The production database must exist. It is not created automatically:
+#        doctl databases db create <cluster-id> stocs_auth_prod
+#   2. The `production` GitHub Environment must hold APP_KEY and MAIL_PASSWORD.
+#      Generate the key with `php artisan key:generate --show`; it must never change
+#      afterwards or every encrypted value and session becomes unreadable.
+#   3. DNS for auth.stocs.com should be ready, or the deploy succeeds while the domain
+#      stays pending.
+#
+# Then run with create_app ticked. Afterwards leave it unticked: `apps create` fails on
+# an existing name, and the normal path is an update.
+#
+# AFTER the first deploy, two one-off steps that this workflow deliberately does not do:
+#
+#   Seed the operator admins. The migrate job runs migrations only, because
+#   AdminUsersSeeder reapplies passwords from env on every run and would silently revert
+#   a password an operator changed:
+#     doctl apps console <APP_ID> --component api
+#     php artisan db:seed --class=AdminUsersSeeder
+#   ADMIN_1_* must be in the app environment at that moment. Never run a bare db:seed:
+#   DatabaseSeeder also calls DemoUsersSeeder, which must not run in production.
+#
+#   Issue the service key that stocs-bids needs. Only a running production auth can:
+#     php artisan auth:issue-service-key "bids-prod" bids
+#   It is shown once. Add it to bids' production environment as STOCS_AUTH_SERVICE_KEY.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy. Defaults to building from this commit.'
+        required: false
+        type: string
+      create_app:
+        description: 'First run only: create the app instead of updating it'
+        type: boolean
+        default: false
+      skip_build:
+        description: 'Deploy an existing tag without rebuilding (requires image_tag)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-prod-auth
+  cancel-in-progress: false
+
+env:
+  REGISTRY: registry.digitalocean.com/stocs-registry
+  IMAGE: stocs-auth
+
+jobs:
+  validate:
+    # Skipped when deploying an already-built tag, since that image was validated when it
+    # was built. Still runs for a normal build-and-deploy.
+    if: ${{ !inputs.skip_build }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          extensions: bcmath, exif, intl, mbstring, pdo_sqlite, pcntl, zip
+          coverage: none
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Validate and audit PHP dependencies
+        run: |
+          composer validate --strict
+          composer audit --locked --no-dev
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Run checks
+        run: |
+          vendor/bin/pint --test
+          php artisan route:list --json > /dev/null
+          php artisan test
+
+  deploy:
+    needs: [validate]
+    # `always()` plus an explicit failure check, so this still runs when validate is
+    # skipped by skip_build, but never runs when validate actually failed.
+    if: ${{ always() && needs.validate.result != 'failure' && needs.validate.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Resolve the image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to DOCR
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Set up Buildx
+        if: ${{ !inputs.skip_build }}
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build & push image
+        if: ${{ !inputs.skip_build }}
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Deliberately does NOT push :latest. A mutable tag shared with staging builds is
+      # how a staging image ends up in production; production deploys a specific tag.
+
+      - name: Confirm the image exists in the registry
+        run: |
+          if ! doctl registry repository list-tags "${{ env.IMAGE }}" --format Tag --no-header \
+               | grep -qx "${{ steps.tag.outputs.tag }}"; then
+            echo "::error::tag ${{ steps.tag.outputs.tag }} is not in the registry"
+            exit 1
+          fi
+
+      # Redacted, so the log shows what will be applied without printing secret values.
+      - name: Preview the rendered spec
+        env:
+          APP_KEY: ${{ secrets.APP_KEY }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+        run: |
+          chmod +x .do/render-spec.sh
+          .do/render-spec.sh .do/app.yaml .env.production.example "${{ steps.tag.outputs.tag }}" --redact
+
+      - name: Deploy
+        env:
+          APP_KEY: ${{ secrets.APP_KEY }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+        run: |
+          chmod +x .do/render-spec.sh
+
+          if [ "${{ inputs.create_app }}" = "true" ]; then
+            echo "Creating stocs-auth-prod"
+            .do/render-spec.sh .do/app.yaml .env.production.example "${{ steps.tag.outputs.tag }}" \
+              | doctl apps create --spec - --wait
+          else
+            APP_ID="$(doctl apps list --format ID,Spec.Name --no-header | awk '$2 == "stocs-auth-prod" {print $1}')"
+            if [ -z "$APP_ID" ]; then
+              echo "::error::no app named stocs-auth-prod. Re-run with create_app ticked for the first deploy."
+              exit 1
+            fi
+            echo "Updating $APP_ID"
+            .do/render-spec.sh .do/app.yaml .env.production.example "${{ steps.tag.outputs.tag }}" \
+              | doctl apps update "$APP_ID" --spec - --wait
+          fi
+
+      - name: Report
+        run: |
+          APP_ID="$(doctl apps list --format ID,Spec.Name --no-header | awk '$2 == "stocs-auth-prod" {print $1}')"
+          echo "::notice::Deployed ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }} to stocs-auth-prod ($APP_ID)"
+          doctl apps get "$APP_ID" --format ID,Spec.Name,DefaultIngress,ActiveDeployment.Phase,UpdatedAt
