@@ -57,6 +57,7 @@ class BuyPlatformTest extends TestCase
             'status' => 'approved',
         ]);
 
+        // The issued token must carry the buy ability so a buy backend accepts it.
         $user = User::where('email', 'buyer@example.com')->firstOrFail();
         $this->assertTrue($user->tokens()->first()->can('platform:buy'));
         $this->assertFalse($user->tokens()->first()->can('platform:bids'));
@@ -88,6 +89,8 @@ class BuyPlatformTest extends TestCase
         ])->assertStatus(422);
     }
 
+    // A user who first signed up on bids and later logs into buy retains
+    // 'bids' as their origin, but gains buy access.
     public function test_existing_bids_user_buying_keeps_original_signup_platform(): void
     {
         $user = User::create([
